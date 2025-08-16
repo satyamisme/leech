@@ -25,6 +25,7 @@ from tenacity import (
     RetryError,
 )
 
+from .... import bot_loop
 from ...core.config_manager import Config
 from ...core.mltb_client import TgClient
 from ..ext_utils.bot_utils import sync_to_async
