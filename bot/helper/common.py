@@ -534,6 +534,11 @@ class TaskConfig:
         nextmsg = await self.client.get_messages(
             chat_id=self.message.chat.id, message_ids=nextmsg.id
         )
+        if not nextmsg:
+            LOGGER.error("Failed to get sent message.")
+            if self.multi_tag in multi_tags:
+                multi_tags.discard(self.multi_tag)
+            return
         if self.message.from_user:
             nextmsg.from_user = self.user
         else:
