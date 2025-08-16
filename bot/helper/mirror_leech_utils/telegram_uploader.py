@@ -25,8 +25,8 @@ from tenacity import (
     RetryError,
 )
 
-from ...core.config_manager import Config
-from ...core.mltb_client import TgClient
+from ....core.config_manager import Config
+from ....core.mltb_client import TgClient
 from ..ext_utils.bot_utils import sync_to_async
 from ..ext_utils.files_utils import is_archive, get_base_name
 from ..telegram_helper.message_utils import delete_message
@@ -220,6 +220,8 @@ class TelegramUploader:
         if not res:
             return
 
+        self.total_parts = len(natsorted(await sync_to_async(listdir, self._path)))
+        self.current_part = 1
         for dirpath, _, files in natsorted(await sync_to_async(walk, self._path)):
             if dirpath.strip().endswith("/yt-dlp-thumb"):
                 continue
@@ -249,13 +251,13 @@ class TelegramUploader:
                         group_lists = [
                             x for v in self._media_dict.values() for x in v.keys()
                         ]
-                        match = re_match(r".+(?=\.0*\d+$)|.+(?=\.part\d+\..+$)", f_path)
+                        match = re_match(r".+(?=\..+\.0*\d+$)|.+(?=\.part\d+\..+$)", f_path)
                         if not match or match and match.group(0) not in group_lists:
                             for key, value in list(self._media_dict.items()):
                                 for subkey, msgs in list(value.items()):
                                     if len(msgs) > 1:
                                         await self._send_media_group(subkey, key, msgs)
-                    if self._listener.hybrid_leech and self._listener.user_transmission:
+                    if self._listener.hybrid_leech and self._listener.user_transmission or Config.USE_USER_SESSION_FOR_BIG_FILES:
                         self._user_session = f_size > 2097152000
                         if self._user_session:
                             self._sent_msg = await TgClient.user.get_messages(
@@ -292,6 +294,7 @@ class TelegramUploader:
                     self._up_path
                 ):
                     await remove(self._up_path)
+                self.current_part += 1
         for key, value in list(self._media_dict.items()):
             for subkey, msgs in list(value.items()):
                 if len(msgs) > 1:

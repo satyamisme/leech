@@ -213,10 +213,12 @@ class TaskListener(TaskConfig):
             async with task_dict_lock:
                 task_dict[self.mid] = TelegramStatus(self, tg, gid, "up")
 
+            self.total_parts = tg.total_parts
             async for sent_message in tg.upload():
                 if self.is_cancelled:
                     break
                 if sent_message:
+                    self.current_part = tg.current_part
                     await self._send_leech_completion_message(sent_message)
 
             if self.is_cancelled:
@@ -301,10 +303,30 @@ class TaskListener(TaskConfig):
         name = ospath.basename(sent_message.document.file_name if sent_message.document else sent_message.video.file_name)
         size = sent_message.document.file_size if sent_message.document else sent_message.video.file_size
 
-        msg = f"📽️ <code>{name}</code>"
-        msg += f"\n📏 {get_readable_file_size(size)} | ⏱️ {get_readable_time(time() - self.start_time)} | 📅 {datetime.fromtimestamp(time()).strftime('%d %b %Y')}"
+        total_parts = self.total_parts
+        current_part = self.current_part
+
+        msg = f"🎬 <code>{self.name}</code>"
+        msg += f"\n📁 Part {current_part} of {total_parts} | 📂 Total: {get_readable_file_size(self.size)} | ⏱️ {get_readable_time(self.media_info['format']['duration'])}"
 
         if self.media_info:
+            # Video info
+            video_stream = next((stream for stream in self.streams_kept if stream['codec_type'] == 'video'), None)
+            if video_stream:
+                msg += f"\n📊 {video_stream.get('height')}p • {video_stream.get('codec_name')} • "
+
+            # Audio info
+            audio_stream = next((stream for stream in self.streams_kept if stream['codec_type'] == 'audio'), None)
+            if audio_stream:
+                msg += f"{len(self.streams_kept)}A • {audio_stream.get('tags', {}).get('language', 'N/A').upper()} • Split"
+
+            # Source
+            msg += f"\n📡 Source: {self.tag}"
+
+            # Original Filename
+            msg += f"\n\n📽️ <code>{self.original_name}</code>"
+            msg += f"\n📏 {get_readable_file_size(size)} | 📅 {datetime.fromtimestamp(time()).strftime('%d %b %Y')}"
+
             # Streams Kept
             msg += "\n\n**Streams Kept:**"
             video_streams_kept = [s for s in self.streams_kept if s['codec_type'] == 'video' and s.get('disposition', {}).get('attached_pic') == 0]
@@ -326,19 +348,21 @@ class TaskListener(TaskConfig):
                 for stream in subs_removed:
                     msg += f"\n🚫 {self._format_stream_info(stream, 'subtitle')}"
 
-            # Album Art
-            album_art = next((s for s in self.media_info['streams'] if s.get('disposition', {}).get('attached_pic') == 1), None)
-            if album_art:
-                msg += "\n\n**Album Art (Metadata Only):**"
-                art_info = f"Art: {album_art.get('codec_name', 'N/A')}, {album_art.get('width')}x{album_art.get('height')}"
-                msg += f"\n🖼️ <code>{art_info}</code>"
+            # Navigation
+            if current_part > 1:
+                prev_part_name = name.replace(f".part{current_part:02d}", f".part{current_part-1:02d}")
+                msg += f"\n⬅️ Prev Part: <code>{prev_part_name}</code>"
+            if current_part < total_parts:
+                next_part_name = name.replace(f".part{current_part:02d}", f".part{current_part+1:02d}")
+                msg += f"\n➡️ Next Part: <code>{next_part_name}</code>"
 
             # Final Summary
-            kept_v = len(video_streams_kept)
-            kept_a = len(audio_streams_kept)
-            kept_s = len([s for s in self.streams_kept if s['codec_type'] == 'subtitle'])
-            total_kept = kept_v + kept_a + kept_s
-            msg += f"\n\n📊 **Final:** {total_kept} streams ({kept_v}v, {kept_a}a, {kept_s}s) | ⚡️ {self.tag}"
+            msg += f"\n\n✅ Upload Complete (Part {current_part}/{total_parts})"
+            if current_part == total_parts:
+                msg += "\n✨ All parts uploaded successfully!"
+                msg += f"\n🔗 Files are now available in your chat."
+                msg += f"\n⚡️ {self.tag}"
+
         else:
             # Fallback for non-media files
             msg = f"🎉 <b>Task Completed by {self.tag}</b>"
