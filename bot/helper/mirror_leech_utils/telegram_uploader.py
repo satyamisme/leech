@@ -219,6 +219,7 @@ class TelegramUploader:
         res = await self._msg_to_reply()
         if not res:
             return
+
         for dirpath, _, files in natsorted(await sync_to_async(walk, self._path)):
             if dirpath.strip().endswith("/yt-dlp-thumb"):
                 continue
@@ -271,12 +272,10 @@ class TelegramUploader:
                     await self._upload_file(cap_mono, file_, f_path)
                     if self._listener.is_cancelled:
                         return
-                    if (
-                        not self._is_corrupted
-                        and (self._listener.is_super_chat or self._listener.up_dest)
-                        and not self._is_private
-                    ):
-                        self._msgs_dict[self._sent_msg.link] = file_
+                    if not self._is_corrupted:
+                        yield self._sent_msg
+                        if self._listener.is_super_chat or self._listener.up_dest and not self._is_private:
+                            self._msgs_dict[self._sent_msg.link] = file_
                     await sleep(1)
                 except Exception as err:
                     if isinstance(err, RetryError):
@@ -313,12 +312,6 @@ class TelegramUploader:
             await self._listener.on_upload_error(
                 f"Files Corrupted or unable to upload. {self._error or 'Check logs!'}"
             )
-            return
-        LOGGER.info(f"Leech Completed: {self._listener.name}")
-        await self._listener.on_upload_complete(
-            None, self._msgs_dict, self._total_files, self._corrupted
-        )
-        return
 
     @retry(
         wait=wait_exponential(multiplier=2, min=4, max=8),

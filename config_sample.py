@@ -74,6 +74,8 @@ HYBRID_LEECH = False
 LEECH_FILENAME_PREFIX = ""
 LEECH_DUMP_CHAT = ""
 THUMBNAIL_LAYOUT = ""
+# Video
+PREFERRED_LANGUAGES = "tel, hin, eng"
 # qBittorrent/Aria2c
 TORRENT_TIMEOUT = 0
 BASE_URL = ""

@@ -31,6 +31,7 @@ class Config:
     HYBRID_LEECH = False
     HYDRA_IP = ""
     HYDRA_API_KEY = ""
+    PREFERRED_LANGUAGES = "tel, hin, eng"
     NAME_SUBSTITUTE = ""
     OWNER_ID = 0
     QUEUE_ALL = 0

@@ -369,6 +369,34 @@ class FFMpeg:
                             self._eta_raw = 0
             await sleep(0.05)
 
+    async def run_command(self, cmd, f_path):
+        self.clear()
+        self._total_time = (await get_media_info(f_path))[0]
+
+        cmd.insert(1, "-progress")
+        cmd.insert(2, "pipe:1")
+
+        if self._listener.is_cancelled:
+            return False
+
+        self._listener.subproc = await create_subprocess_exec(*cmd, stdout=PIPE, stderr=PIPE)
+        await self._ffmpeg_progress()
+        _, stderr = await self._listener.subproc.communicate()
+        code = self._listener.subproc.returncode
+
+        if self._listener.is_cancelled:
+            return False
+
+        if code == 0:
+            return cmd[-1]
+        else:
+            try:
+                stderr = stderr.decode().strip()
+            except:
+                stderr = "Unable to decode the error!"
+            LOGGER.error(f"{stderr}. Something went wrong while running ffmpeg cmd. Path: {f_path}")
+            return False
+
     async def ffmpeg_cmds(self, ffmpeg, f_path):
         self.clear()
         self._total_time = (await get_media_info(f_path))[0]

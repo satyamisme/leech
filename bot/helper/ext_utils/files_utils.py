@@ -293,6 +293,25 @@ async def split_file(f_path, split_size, listener):
     return True
 
 
+async def is_video(path: str):
+    """Check if a file is a video."""
+    mime_type = await sync_to_async(get_mime_type, path)
+    if mime_type.startswith("video"):
+        return True
+    try:
+        result = await cmd_exec(["ffprobe", "-hide_banner", "-loglevel", "error", "-print_format", "json", "-show_streams", path])
+        if result[0] and result[2] == 0:
+            fields = eval(result[0]).get("streams")
+            if fields is None:
+                return False
+            for stream in fields:
+                if stream.get("codec_type") == "video":
+                    return True
+    except:
+        return False
+    return False
+
+
 class SevenZ:
     def __init__(self, listener):
         self._listener = listener
