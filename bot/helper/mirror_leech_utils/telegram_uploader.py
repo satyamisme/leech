@@ -3,7 +3,7 @@ from aioshutil import rmtree
 from asyncio import sleep
 from logging import getLogger
 from natsort import natsorted
-from os import walk, path as ospath
+from os import walk, path as ospath, listdir
 from time import time
 from re import match as re_match, sub as re_sub
 from pyrogram.errors import FloodWait, RPCError, FloodPremiumWait, BadRequest
