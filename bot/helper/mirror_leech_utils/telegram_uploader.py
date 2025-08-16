@@ -25,13 +25,13 @@ from tenacity import (
     RetryError,
 )
 
-from .... import bot_loop
-from ...core.config_manager import Config
-from ...core.mltb_client import TgClient
-from ..ext_utils.bot_utils import sync_to_async
-from ..ext_utils.files_utils import is_archive, get_base_name
-from ..telegram_helper.message_utils import delete_message
-from ..ext_utils.media_utils import (
+from bot import bot_loop
+from bot.core.config_manager import Config
+from bot.core.mltb_client import TgClient
+from bot.helper.ext_utils.bot_utils import sync_to_async
+from bot.helper.ext_utils.files_utils import is_archive, get_base_name
+from bot.helper.telegram_helper.message_utils import delete_message
+from bot.helper.ext_utils.media_utils import (
     get_media_info,
     get_document_type,
     get_video_thumbnail,
