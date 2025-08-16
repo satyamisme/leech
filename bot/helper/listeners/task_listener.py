@@ -307,7 +307,7 @@ class TaskListener(TaskConfig):
         current_part = self.current_part
 
         msg = f"🎬 <code>{self.name}</code>"
-        msg += f"\n📁 Part {current_part} of {total_parts} | 📂 Total: {get_readable_file_size(self.size)} | ⏱️ {get_readable_time(float(self.media_info['format']['duration']))}"
+        msg += f"\n📁 Part {current_part} of {total_parts} | 📂 Total: {get_readable_file_size(self.size)} | ⏱️ {get_readable_time(float(self.media_info.get('format', {}).get('duration', 0)))}"
 
         if self.media_info:
             # Video info
