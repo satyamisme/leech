@@ -145,7 +145,7 @@ async def process_video(path, listener):
     for stream in streams_to_keep_in_ffmpeg:
         cmd.extend(['-map', f'0:{stream["index"]}'])
 
-    cmd.extend(['-c:v', 'copy', '-c:a', 'copy', '-c:s', 'copy', '-map_metadata', '-1', '-avoid_negative_ts', 'make_zero', '-fflags', '+genpts', '-max_interleave_delta', '0'])
+    cmd.extend(['-c:v', 'copy', '-c:a', 'copy', '-c:s', 'copy', '-avoid_negative_ts', 'make_zero', '-fflags', '+genpts', '-max_interleave_delta', '0'])
 
     base_name, _ = path.rsplit('.', 1)
     output_path = f"{base_name}.processed.mkv"

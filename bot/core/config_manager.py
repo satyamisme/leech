@@ -66,6 +66,7 @@ class Config:
     USER_SESSION_STRING = ""
     USER_TRANSMISSION = False
     USE_SERVICE_ACCOUNTS = False
+    USE_USER_SESSION_FOR_BIG_FILES = False
     WEB_PINCODE = False
     YT_DLP_OPTIONS = {}
 

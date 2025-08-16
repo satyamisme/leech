@@ -427,7 +427,7 @@ class TaskConfig:
                 or Config.LEECH_SPLIT_SIZE
             )
             self.max_split_size = (
-                TgClient.MAX_SPLIT_SIZE if self.user_transmission else 2097152000
+                TgClient.MAX_SPLIT_SIZE if self.user_transmission else 2086666240
             )
             if self.split_size == 0:
                 self.split_size = self.max_split_size
