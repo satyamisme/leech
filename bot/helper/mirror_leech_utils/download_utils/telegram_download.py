@@ -1,7 +1,5 @@
-from asyncio import Lock, sleep, Semaphore, gather
+from asyncio import Lock, sleep
 from time import time
-import math
-import aiofiles
 from pyrogram.errors import FloodWait, FloodPremiumWait
 
 from .... import (
@@ -14,21 +12,18 @@ from ...ext_utils.task_manager import check_running_tasks, stop_duplicate_check
 from ...mirror_leech_utils.status_utils.queue_status import QueueStatus
 from ...mirror_leech_utils.status_utils.telegram_status import TelegramStatus
 from ...telegram_helper.message_utils import send_status_message
-from ...ext_utils.bot_utils import calculate_dynamic_chunk_size
 
 global_lock = Lock()
 GLOBAL_GID = set()
 
+
 class TelegramDownloadHelper:
     def __init__(self, listener):
         self._processed_bytes = 0
-        self._start_time = time()
+        self._start_time = 1
         self._listener = listener
         self._id = ""
         self.session = ""
-        self._accumulated = 0
-        self._last_reported = 0
-        self._update_threshold = 5 * 1024 * 1024  # 5MB
 
     @property
     def speed(self):
@@ -54,11 +49,13 @@ class TelegramDownloadHelper:
         else:
             LOGGER.info(f"Start Queued Download from Telegram: {self._listener.name}")
 
-    async def _update_progress(self, size):
-        self._accumulated += size
-        if self._accumulated >= self._update_threshold:
-            self._processed_bytes += self._accumulated
-            self._accumulated = 0
+    async def _on_download_progress(self, current, _):
+        if self._listener.is_cancelled:
+            if self.session == "user":
+                TgClient.user.stop_transmission()
+            else:
+                TgClient.bot.stop_transmission()
+        self._processed_bytes = current
 
     async def _on_download_error(self, error):
         async with global_lock:
@@ -72,86 +69,26 @@ class TelegramDownloadHelper:
                 GLOBAL_GID.remove(self._id)
         await self._listener.on_download_complete()
 
-    async def _download_part(self, client, media, path, start, end, semaphore):
-        CHUNK_SIZE = 1024 * 1024  # Telegram chunk size
-        async with semaphore:
-            chunk_offset = start // CHUNK_SIZE
-            num_chunks = ((end - start + 1) + CHUNK_SIZE - 1) // CHUNK_SIZE
-            try:
-                async with aiofiles.open(path, 'r+b') as f:
-                    await f.seek(start)
-                    transferred = 0
-                    async for chunk in client.stream_media(media, offset=chunk_offset, limit=num_chunks):
-                        if self._listener.is_cancelled:
-                            if self.session == "user":
-                                TgClient.user.stop_transmission()
-                            else:
-                                TgClient.bot.stop_transmission()
-                            return
-                        await f.write(chunk)
-                        await self._update_progress(len(chunk))
-                        transferred += len(chunk)
-            except (FloodWait, FloodPremiumWait) as f:
-                LOGGER.warning(str(f))
-                await sleep(f.value)
-                await self._download_part(client, media, path, start, end, semaphore)
-            except Exception as e:
-                LOGGER.error(str(e))
-                await self._on_download_error(str(e))
-
     async def _download(self, message, path):
-        media = (
-            message.document
-            or message.photo
-            or message.video
-            or message.audio
-            or message.voice
-            or message.video_note
-            or message.sticker
-            or message.animation
-            or None
-        )
-        if media is None:
-            await self._on_download_error("No media to download")
-            return
-
-        client = TgClient.user if self.session == "user" else TgClient.bot
-        file_size = self._listener.size
-
         try:
-            # Pre-allocate file space
-            async with aiofiles.open(path, 'wb') as f:
-                await f.truncate(file_size)
-
-            part_size = calculate_dynamic_chunk_size(file_size)
-            parts = []
-            start = 0
-            while start < file_size:
-                end = min(start + part_size - 1, file_size - 1)
-                parts.append((start, end))
-                start = end + 1
-
-            MAX_PARALLEL = 20
-            max_concurrency = min(MAX_PARALLEL, max(10, 1000 // (len(parts) // 100 + 1)))
-            semaphore = Semaphore(max_concurrency)
-
-            tasks = [self._download_part(client, media, path, s, e, semaphore) for s, e in parts]
-
-            BATCH_SIZE = 50
-            if len(tasks) > BATCH_SIZE:
-                for i in range(0, len(tasks), BATCH_SIZE):
-                    await gather(*tasks[i:i + BATCH_SIZE])
-                    await sleep(0.1)
-            else:
-                await gather(*tasks)
-
+            download = await message.download(
+                file_name=path, progress=self._on_download_progress
+            )
             if self._listener.is_cancelled:
                 return
-            await self._on_download_complete()
+        except (FloodWait, FloodPremiumWait) as f:
+            LOGGER.warning(str(f))
+            await sleep(f.value)
+            await self._download(message, path)
+            return
         except Exception as e:
             LOGGER.error(str(e))
             await self._on_download_error(str(e))
             return
+        if download is not None:
+            await self._on_download_complete()
+        elif not self._listener.is_cancelled:
+            await self._on_download_error("Internal error occurred")
 
     async def add_download(self, message, path, session):
         self.session = session

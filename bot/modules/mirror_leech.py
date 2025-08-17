@@ -72,6 +72,7 @@ class Mirror(TaskListener):
         self.is_nzb = is_nzb
 
     async def new_event(self):
+        await self.on_task_created()
         text = self.message.text.split("\n")
         input_list = text[0].split(" ")
 
@@ -289,12 +290,10 @@ class Mirror(TaskListener):
             and not is_gdrive_id(self.link)
             and not is_gdrive_link(self.link)
         ):
-            help_msg = (
-                "Send a link or reply to a message with:\n"
-                "<code>/leech</code> <link>\n"
-                "to download and process video."
+            await send_message(
+                self.message, COMMAND_USAGE["mirror"][0], COMMAND_USAGE["mirror"][1]
             )
-            await send_message(self.message, help_msg)
+            await self.remove_from_same_dir()
             return
 
         if len(self.link) > 0:

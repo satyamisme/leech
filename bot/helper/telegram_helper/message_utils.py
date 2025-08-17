@@ -207,7 +207,7 @@ async def update_status_message(sid, force=False):
             return
         if text != status_dict[sid]["message"].text:
             message = await edit_message(
-                status_dict[sid]["message"], text, buttons, block=True
+                status_dict[sid]["message"], text, buttons, block=False
             )
             if isinstance(message, str):
                 if message.startswith("Telegram says: [40"):

@@ -427,7 +427,7 @@ class TaskConfig:
                 or Config.LEECH_SPLIT_SIZE
             )
             self.max_split_size = (
-                TgClient.MAX_SPLIT_SIZE if self.user_transmission else 2086666240
+                TgClient.MAX_SPLIT_SIZE if self.user_transmission else 2097152000
             )
             if self.split_size == 0:
                 self.split_size = self.max_split_size
@@ -534,11 +534,6 @@ class TaskConfig:
         nextmsg = await self.client.get_messages(
             chat_id=self.message.chat.id, message_ids=nextmsg.id
         )
-        if not nextmsg:
-            LOGGER.error("Failed to get sent message.")
-            if self.multi_tag in multi_tags:
-                multi_tags.discard(self.multi_tag)
-            return
         if self.message.from_user:
             nextmsg.from_user = self.user
         else:
