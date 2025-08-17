@@ -26,11 +26,12 @@ class TelegramDownloadHelper:
         self._id = ""
         self.session = ""
         self.parallel_downloader = None
+        self.download_speed = 0
 
     @property
     def speed(self):
         if self.parallel_downloader:
-            return self.listener.download_speed
+            return self.download_speed
         return self._processed_bytes / (time() - self._start_time)
 
     @property
@@ -52,6 +53,13 @@ class TelegramDownloadHelper:
             LOGGER.info(f"Download from Telegram: {self._listener.name}")
         else:
             LOGGER.info(f"Start Queued Download from Telegram: {self._listener.name}")
+
+    def onDownloadProgress(self, current, total, speed):
+        if self._listener.is_cancelled:
+            return
+        self._processed_bytes = current
+        self._listener.size = total
+        self.download_speed = speed
 
     async def _on_download_progress(self, current, _):
         if self._listener.is_cancelled:
