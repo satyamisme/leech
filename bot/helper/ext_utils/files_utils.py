@@ -265,17 +265,16 @@ async def join_files(opath):
 
 
 async def split_file(f_path, split_size, listener):
-    out_path = f"{f_path}.part"
+    out_path = f"{f_path}."
     if listener.is_cancelled:
         return False
     listener.subproc = await create_subprocess_exec(
         "split",
         "--numeric-suffixes=1",
-        "--suffix-length=2",
+        "--suffix-length=3",
         f"--bytes={split_size}",
         f_path,
         out_path,
-        ".split.mkv",
         stderr=PIPE,
     )
     _, stderr = await listener.subproc.communicate()

@@ -139,13 +139,13 @@ async def process_video(path, listener):
          kept_indices = {s['index'] for s in streams_to_keep_in_ffmpeg}
          listener.streams_removed = [s for s in all_streams if s['index'] not in kept_indices]
          listener.art_streams = art_streams
-         return path, media_info, False
+         return path
 
     cmd = ['ffmpeg', '-i', path, '-v', 'error']
     for stream in streams_to_keep_in_ffmpeg:
         cmd.extend(['-map', f'0:{stream["index"]}'])
 
-    cmd.extend(['-c:v', 'copy', '-c:a', 'copy', '-c:s', 'copy', '-avoid_negative_ts', 'make_zero', '-fflags', '+genpts', '-max_interleave_delta', '0'])
+    cmd.extend(['-c:v', 'copy', '-c:a', 'copy', '-c:s', 'copy', '-map_metadata', '-1', '-avoid_negative_ts', 'make_zero', '-fflags', '+genpts', '-max_interleave_delta', '0'])
 
     base_name, _ = path.rsplit('.', 1)
     output_path = f"{base_name}.processed.mkv"
@@ -167,7 +167,7 @@ async def process_video(path, listener):
 
         LOGGER.info("Final decision: Kept %d streams, Removed %d streams.", len(listener.streams_kept), len(listener.streams_removed))
 
-        return final_path, media_info, True
+        return final_path, media_info
 
-    return None, None, False
+    return None, None
 

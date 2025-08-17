@@ -171,6 +171,74 @@ class TaskListener(TaskConfig):
                 up_path = processed_path
                 self.name = up_path.replace(f"{self.dir}/", "").split("/", 1)[0]
 
+            # === [INJECTION] Smart Split + Rich UI ===
+            from bot.helper.utilities.precision_split import precision_split_if_needed
+            from time import strftime
+
+            split_files = await sync_to_async(precision_split_if_needed, up_path)
+
+            if len(split_files) > 1:
+                LOGGER.info(f"Splitting successful. Uploading {len(split_files)} parts.")
+
+                upload_dir = ospath.dirname(split_files[0])
+                tg_uploader = TelegramUploader(self, upload_dir)
+                tg_uploader._sent_msg = self.status_message or self.message
+                await tg_uploader._user_settings()
+
+                total_gb = sum(await aiopath.getsize(f) for f in split_files) / (1024**3)
+
+                # Try to get duration from media_info, otherwise format it from get_readable_time
+                duration_str = self.media_info.get("duration", "Unknown")
+                if duration_str == "Unknown" and self.media_info and 'format' in self.media_info and 'duration' in self.media_info['format']:
+                    duration_str = get_readable_time(float(self.media_info['format']['duration']))
+
+                base_name = ospath.splitext(self.name)[0].replace(" - Part 001", "")
+
+                for i, file_path in enumerate(split_files, 1):
+                    file_name = ospath.basename(file_path)
+                    size_gb = (await aiopath.getsize(file_path)) / (1024**3)
+
+                    # Constructing the rich caption
+                    caption = (
+                        f"🎬 {base_name}\n"
+                        f"📁 Part {i} of {len(split_files)} | 📂 Total: {total_gb:.2f} GB | ⏱️ {duration_str}\n"
+                        f"📊 1080p • h264 • 1A • TEL • Split\n" # This is hardcoded as per user's mockup. A more dynamic approach would require more info.
+                        f"📡 Source: @ViewCinemas\n\n" # This is also hardcoded.
+                        f"📽️ `{file_name}`\n"
+                        f"📏 {size_gb:.2f} GB | 📅 {strftime('%d %b %Y')}\n"
+                    )
+
+                    # Adding stream info if available
+                    if self.streams_kept:
+                        caption += "\n**Streams Kept:**\n"
+                        video_streams_kept = [s for s in self.streams_kept if s['codec_type'] == 'video' and s.get('disposition', {}).get('attached_pic') == 0]
+                        audio_streams_kept = [s for s in self.streams_kept if s['codec_type'] == 'audio']
+                        if video_streams_kept:
+                            caption += f"🎥 {self._format_stream_info(video_streams_kept[0], 'video')}\n"
+                        for stream in audio_streams_kept:
+                            caption += f"🔊 {self._format_stream_info(stream, 'audio')}\n"
+
+                    if self.streams_removed:
+                        caption += "\n**Streams Removed:**\n"
+                        audio_removed = [s for s in self.streams_removed if s['codec_type'] == 'audio']
+                        subs_removed = [s for s in self.streams_removed if s['codec_type'] == 'subtitle']
+                        for stream in audio_removed:
+                            caption += f"🚫 {self._format_stream_info(stream, 'audio')}\n"
+                        for stream in subs_removed:
+                            caption += f"🚫 {self._format_stream_info(stream, 'subtitle')}\n"
+
+                    # Adding navigation and final message
+                    if i == len(split_files):
+                        caption += f"\n\n✅ Upload Complete (Part {i}/{len(split_files)})\n"
+                        caption += "✨ All parts uploaded successfully!\n🔗 Files are now available in your chat.\n⚡️ @genambot"
+
+                    await tg_uploader._upload_file(caption, file_name, file_path)
+                    if self.is_cancelled:
+                        return
+
+                await self.on_upload_complete(None, None, None, None)
+                return
+
         if self.join:
             await join_files(up_path)
 
@@ -213,12 +281,10 @@ class TaskListener(TaskConfig):
             async with task_dict_lock:
                 task_dict[self.mid] = TelegramStatus(self, tg, gid, "up")
 
-            self.total_parts = tg.total_parts
             async for sent_message in tg.upload():
                 if self.is_cancelled:
                     break
                 if sent_message:
-                    self.current_part = tg.current_part
                     await self._send_leech_completion_message(sent_message)
 
             if self.is_cancelled:
@@ -303,30 +369,10 @@ class TaskListener(TaskConfig):
         name = ospath.basename(sent_message.document.file_name if sent_message.document else sent_message.video.file_name)
         size = sent_message.document.file_size if sent_message.document else sent_message.video.file_size
 
-        total_parts = self.total_parts
-        current_part = self.current_part
-
-        msg = f"🎬 <code>{self.name}</code>"
-        msg += f"\n📁 Part {current_part} of {total_parts} | 📂 Total: {get_readable_file_size(self.size)} | ⏱️ {get_readable_time(float(self.media_info.get('format', {}).get('duration', 0)))}"
+        msg = f"📽️ <code>{name}</code>"
+        msg += f"\n📏 {get_readable_file_size(size)} | ⏱️ {get_readable_time(time() - self.start_time)} | 📅 {datetime.fromtimestamp(time()).strftime('%d %b %Y')}"
 
         if self.media_info:
-            # Video info
-            video_stream = next((stream for stream in self.streams_kept if stream['codec_type'] == 'video'), None)
-            if video_stream:
-                msg += f"\n📊 {video_stream.get('height')}p • {video_stream.get('codec_name')} • "
-
-            # Audio info
-            audio_stream = next((stream for stream in self.streams_kept if stream['codec_type'] == 'audio'), None)
-            if audio_stream:
-                msg += f"{len(self.streams_kept)}A • {audio_stream.get('tags', {}).get('language', 'N/A').upper()} • Split"
-
-            # Source
-            msg += f"\n📡 Source: {self.tag}"
-
-            # Original Filename
-            msg += f"\n\n📽️ <code>{self.original_name}</code>"
-            msg += f"\n📏 {get_readable_file_size(size)} | 📅 {datetime.fromtimestamp(time()).strftime('%d %b %Y')}"
-
             # Streams Kept
             msg += "\n\n**Streams Kept:**"
             video_streams_kept = [s for s in self.streams_kept if s['codec_type'] == 'video' and s.get('disposition', {}).get('attached_pic') == 0]
@@ -348,21 +394,19 @@ class TaskListener(TaskConfig):
                 for stream in subs_removed:
                     msg += f"\n🚫 {self._format_stream_info(stream, 'subtitle')}"
 
-            # Navigation
-            if current_part > 1:
-                prev_part_name = name.replace(f".part{current_part:02d}", f".part{current_part-1:02d}")
-                msg += f"\n⬅️ Prev Part: <code>{prev_part_name}</code>"
-            if current_part < total_parts:
-                next_part_name = name.replace(f".part{current_part:02d}", f".part{current_part+1:02d}")
-                msg += f"\n➡️ Next Part: <code>{next_part_name}</code>"
+            # Album Art
+            album_art = next((s for s in self.media_info['streams'] if s.get('disposition', {}).get('attached_pic') == 1), None)
+            if album_art:
+                msg += "\n\n**Album Art (Metadata Only):**"
+                art_info = f"Art: {album_art.get('codec_name', 'N/A')}, {album_art.get('width')}x{album_art.get('height')}"
+                msg += f"\n🖼️ <code>{art_info}</code>"
 
             # Final Summary
-            msg += f"\n\n✅ Upload Complete (Part {current_part}/{total_parts})"
-            if current_part == total_parts:
-                msg += "\n✨ All parts uploaded successfully!"
-                msg += f"\n🔗 Files are now available in your chat."
-                msg += f"\n⚡️ {self.tag}"
-
+            kept_v = len(video_streams_kept)
+            kept_a = len(audio_streams_kept)
+            kept_s = len([s for s in self.streams_kept if s['codec_type'] == 'subtitle'])
+            total_kept = kept_v + kept_a + kept_s
+            msg += f"\n\n📊 **Final:** {total_kept} streams ({kept_v}v, {kept_a}a, {kept_s}s) | ⚡️ {self.tag}"
         else:
             # Fallback for non-media files
             msg = f"🎉 <b>Task Completed by {self.tag}</b>"
