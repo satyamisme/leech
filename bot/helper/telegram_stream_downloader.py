@@ -6,27 +6,35 @@ from pyrogram.errors import FloodWait
 from pyrogram.types import Message
 from bot import LOGGER
 
-class TelegramParallelDownloader:
-    def __init__(self, client: Client, message: Message, output_path: str):
+# This class uses pyrogram's `stream_media` method for efficient, single-threaded
+# downloads. It is not a true parallel downloader but is faster than the
+# default `download_media` method for large files.
+class TelegramStreamDownloader:
+    def __init__(self, client: Client, message: Message, output_dir: str):
         self.client = client
         self.message = message
-        self.output_path = output_path
+        self.output_dir = output_dir
+        self.output_path = None
         self.file_id = None
         self.file_size = 0
         self.is_cancelled = False
 
     async def get_media_info(self):
-        if self.message.video:
-            self.file_id = self.message.video.file_id
-            self.file_size = self.message.video.file_size
-        elif self.message.document:
-            self.file_id = self.message.document.file_id
-            self.file_size = self.message.document.file_size
-        elif self.message.photo:
-            self.file_id = self.message.photo[-1].file_id
-            self.file_size = self.message.photo[-1].file_size
-        else:
+        media = (
+            self.message.video
+            or self.message.document
+            or self.message.photo
+            or None
+        )
+        if media is None:
             raise ValueError("No media found in message")
+
+        if isinstance(media, list): # handle photos
+            media = media[-1]
+
+        self.file_id = media.file_id
+        self.file_size = media.file_size
+        return media
 
     def cancel(self):
         """Cancel the download"""
@@ -35,8 +43,12 @@ class TelegramParallelDownloader:
 
     async def download(self):
         try:
-            await self.get_media_info()
-            LOGGER.info(f"Starting parallel download: {self.file_id}, Size: {self.file_size}")
+            media = await self.get_media_info()
+
+            file_name = getattr(media, 'file_name', f"{self.file_id}.dat")
+            self.output_path = os.path.join(self.output_dir, file_name)
+
+            LOGGER.info(f"Starting parallel download to: {self.output_path}")
 
             # Pre-allocate file
             with open(self.output_path, "wb") as f:
