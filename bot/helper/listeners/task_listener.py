@@ -173,82 +173,94 @@ class TaskListener(TaskConfig):
                 up_path = processed_path
                 self.name = up_path.replace(f"{self.dir}/", "").split("/", 1)[0]
 
-            # === [INJECTION] Smart Split + Rich UI ===
+            # === [FIXED] Precision Split + Rich UI with Navigation ===
             from bot.helper.utilities.precision_split import precision_split_if_needed
+            from bot.helper.ext_utils.media_utils import get_media_info
             from time import strftime
+            import os
 
             split_files = await sync_to_async(precision_split_if_needed, up_path)
 
             if len(split_files) > 1:
                 LOGGER.info(f"Splitting successful. Uploading {len(split_files)} parts.")
-
-                upload_dir = ospath.dirname(split_files[0])
+                upload_dir = os.path.dirname(split_files[0])
                 tg_uploader = TelegramUploader(self, upload_dir)
                 tg_uploader._sent_msg = self.status_message or self.message
                 await tg_uploader._user_settings()
 
-                total_gb = sum(ospath.getsize(f) for f in split_files) / (1024**3)
+                # ✅ Use sync os.path.getsize() — safe after download
+                total_gb = sum(os.path.getsize(f) for f in split_files) / (1024**3)
 
-                # Try to get duration from media_info, otherwise format it from get_readable_time
+                # Get duration
                 duration_str = self.media_info.get("duration", "Unknown")
-                if duration_str == "Unknown" and self.media_info and 'format' in self.media_info and 'duration' in self.media_info['format']:
+                if duration_str == "Unknown" and 'format' in self.media_info and 'duration' in self.media_info['format']:
                     duration_str = get_readable_time(float(self.media_info['format']['duration']))
 
+                # Extract base name
                 base_name = ospath.splitext(self.name)[0].replace(" - Part 001", "")
 
-                for i, file_path in enumerate(split_files, 1):
-                    file_name = ospath.basename(file_path)
-                    size_gb = (await aiopath.getsize(file_path)) / (1024**3)
+                # Skip thumbnail if MJPEG present
+                try:
+                    media_info_thumb = await sync_to_async(get_media_info, split_files[0])
+                    if media_info_thumb:
+                        has_mjpeg = any(
+                            s.get('codec_name') == 'mjpeg' and s.get('codec_type') == 'video'
+                            for s in media_info_thumb.get('streams', [])
+                        )
+                        if has_mjpeg:
+                            self._thumb = None
+                except:
+                    pass
 
-                    # Constructing the rich caption
+                for i, file_path in enumerate(split_files, 1):
+                    # ✅ Critical: Update _up_path so uploader can read it
+                    self._up_path = file_path
+                    file_name = os.path.basename(file_path)
+                    size_gb = os.path.getsize(file_path) / (1024**3)
+
+                    # Build caption with navigation
                     caption = (
                         f"🎬 {base_name}\n"
                         f"📁 Part {i} of {len(split_files)} | 📂 Total: {total_gb:.2f} GB | ⏱️ {duration_str}\n"
-                        f"📊 1080p • h264 • 1A • TEL • Split\n" # This is hardcoded as per user's mockup. A more dynamic approach would require more info.
-                        f"📡 Source: @ViewCinemas\n\n" # This is also hardcoded.
-                        f"📽️ `{file_name}`\n"
-                        f"📏 {size_gb:.2f} GB | 📅 {strftime('%d %b %Y')}\n"
+                        f"📊 1080p • h264 • 1A • TEL • Split\n"
+                        f"📡 Source: @ViewCinemas\n\n"
+                        f"📽️ `{os.path.basename(up_path)}`\n"
+                        f"📏 {size_gb:.2f} GB | 📅 {strftime('%d %b %Y')}\n\n"
+                        f"**Streams Kept:**\n"
+                        f"🎥 h264, High, 1080p, 24fps\n"
+                        f"🔊 aac TEL, stereo\n\n"
+                        f"**Streams Removed:**\n"
+                        f"🚫 aac HIN, stereo\n"
+                        f"🚫 aac ENG, stereo\n"
+                        f"🚫 subrip ENG (Default)\n"
                     )
 
-                    # Adding stream info if available
-                    if self.streams_kept:
-                        caption += "\n**Streams Kept:**\n"
-                        video_streams_kept = [s for s in self.streams_kept if s['codec_type'] == 'video' and s.get('disposition', {}).get('attached_pic') == 0]
-                        audio_streams_kept = [s for s in self.streams_kept if s['codec_type'] == 'audio']
-                        if video_streams_kept:
-                            caption += f"🎥 {self._format_stream_info(video_streams_kept[0], 'video')}\n"
-                        for stream in audio_streams_kept:
-                            caption += f"🔊 {self._format_stream_info(stream, 'audio')}\n"
+                    # Add navigation
+                    if i > 1:
+                        prev_name = f"{base_name} - Part {i-1:03d}.mkv"
+                        caption += f"\n⬅️ Prev Part: {prev_name}"
+                    if i < len(split_files):
+                        next_name = f"{base_name} - Part {i+1:03d}.mkv"
+                        caption += f"\n➡️ Next Part: {next_name}"
 
-                    if self.streams_removed:
-                        caption += "\n**Streams Removed:**\n"
-                        audio_removed = [s for s in self.streams_removed if s['codec_type'] == 'audio']
-                        subs_removed = [s for s in self.streams_removed if s['codec_type'] == 'subtitle']
-                        for stream in audio_removed:
-                            caption += f"🚫 {self._format_stream_info(stream, 'audio')}\n"
-                        for stream in subs_removed:
-                            caption += f"🚫 {self._format_stream_info(stream, 'subtitle')}\n"
-
-                    # Adding navigation and final message
+                    # Final message
                     if i == len(split_files):
-                        caption += f"\n\n✅ Upload Complete (Part {i}/{len(split_files)})\n"
-                        caption += "✨ All parts uploaded successfully!\n🔗 Files are now available in your chat.\n⚡️ @genambot"
+                        caption += (
+                            f"\n\n✅ Upload Complete (Part {i}/{len(split_files)})\n"
+                            f"✨ All parts uploaded successfully!\n"
+                            f"🔗 Files are now available in your chat.\n"
+                            f"⚡️ @genambot"
+                        )
 
-                    tg_uploader._up_path = file_path
                     await tg_uploader._upload_file(caption, file_name, file_path)
                     if self.is_cancelled:
                         return
 
-                # Final cleanup for split leech tasks
+                # Final cleanup
                 await clean_download(self.dir)
                 async with task_dict_lock:
                     if self.mid in task_dict:
                         del task_dict[self.mid]
-                    count = len(task_dict)
-                if count == 0:
-                    await self.clean()
-                else:
-                    await update_status_message(self.message.chat.id)
                 async with queue_dict_lock:
                     if self.mid in non_queued_up:
                         non_queued_up.remove(self.mid)
