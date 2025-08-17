@@ -187,7 +187,7 @@ class TaskListener(TaskConfig):
                 tg_uploader._sent_msg = self.status_message or self.message
                 await tg_uploader._user_settings()
 
-                total_gb = sum(await aiopath.getsize(f) for f in split_files) / (1024**3)
+                total_gb = sum([await aiopath.getsize(f) for f in split_files]) / (1024**3)
 
                 # Try to get duration from media_info, otherwise format it from get_readable_time
                 duration_str = self.media_info.get("duration", "Unknown")

@@ -123,15 +123,11 @@ class TelegramDownloadHelper:
             if download:
                 if not self._listener.name:
                     if hasattr(media, "file_name") and media.file_name:
-                        if "/" in media.file_name:
-                            self._listener.name = media.file_name.rsplit("/", 1)[-1]
-                            path = path + self._listener.name
-                        else:
-                            self._listener.name = media.file_name
+                        self._listener.name = media.file_name
                     else:
                         self._listener.name = "None"
-                else:
-                    path = path + self._listener.name
+
+                file_path = f"{path}{self._listener.name}"
                 self._listener.size = media.file_size
                 gid = media.file_unique_id
 
@@ -169,22 +165,23 @@ class TelegramDownloadHelper:
                 await self._on_download_start(gid, add_to_queue)
 
                 if self._listener.size > Config.TG_PARALLEL_MIN_SIZE:
-                    from bot.helper.telegram_parallel_downloader import TelegramParallelDownloader
+                    from bot.helper.telegram_stream_downloader import TelegramStreamDownloader
                     client = TgClient.user if self.session == "user" else self._listener.client
-                    downloader = TelegramParallelDownloader(client, message, path)
+                    downloader = TelegramStreamDownloader(client, message, path)
                     self.parallel_downloader = downloader
                     try:
                         result_path = await downloader.download()
                         if result_path:
+                            self._listener.name = result_path.rsplit("/", 1)[-1]
                             await self._on_download_complete()
                             return
                         elif not self._listener.is_cancelled:
                              LOGGER.warning("Falling back to normal download after parallel failure")
                     except Exception as e:
-                        LOGGER.error(f"Parallel download failed with exception: {e}")
+                        LOGGER.error(f"Stream download failed with exception: {e}")
                         LOGGER.warning("Falling back to normal download after parallel failure")
 
-                await self._download(message, path)
+                await self._download(message, file_path)
             else:
                 await self._on_download_error("File already being downloaded!")
         else:
