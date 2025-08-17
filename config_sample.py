@@ -65,7 +65,7 @@ HYDRA_API_KEY = ""
 UPSTREAM_REPO = ""
 UPSTREAM_BRANCH = "master"
 # Leech
-LEECH_SPLIT_SIZE = 0 # Leech split size in bytes. Default is 1990MB for non-premium and 3990MB for premium.
+LEECH_SPLIT_SIZE = 0
 AS_DOCUMENT = False
 EQUAL_SPLITS = False
 MEDIA_GROUP = False
@@ -74,7 +74,6 @@ HYBRID_LEECH = False
 LEECH_FILENAME_PREFIX = ""
 LEECH_DUMP_CHAT = ""
 THUMBNAIL_LAYOUT = ""
-USE_USER_SESSION_FOR_BIG_FILES = False
 # Video
 PREFERRED_LANGUAGES = "tel, hin, eng"
 # qBittorrent/Aria2c
