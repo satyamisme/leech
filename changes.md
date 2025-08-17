@@ -89,3 +89,84 @@ Despite the fixes and features implemented, the following critical issues remain
 The highest priority should be to understand and fix the `AttributeError` in `run_multi`, as this is a clear and reproducible bug that breaks a core feature. After that, the message ordering issue needs to be tackled. This will likely require a deep understanding of the `asyncio` event loop and the `pyrogram` library, and how they interact in a multi-tasking environment. The solution may involve a different approach to sending the completion messages, perhaps by creating a queue of completion messages to be sent after all file uploads have been confirmed.
 
 I wish the next developer the best of luck.
+
+---
+
+# 🚀 New Features and Bug Fixes (Current Session)
+
+## Change Summary
+
+This document summarizes the major features and bug fixes implemented in the bot.
+
+## 🚀 New Features
+
+### 1. Smart Video Splitting
+
+-   **Description:** A new feature has been added to intelligently split large video files (greater than 2GB) into smaller parts before uploading to Telegram. This ensures that uploads do not fail due to Telegram's file size limits.
+-   **Implementation:**
+    -   A new utility module `bot/helper/utilities/precision_split.py` was created to handle the splitting logic.
+    -   It uses `ffmpeg` and `ffprobe` to analyze the video's bitrate and duration, making an intelligent decision on the best split points to avoid re-encoding and to create parts of optimal size.
+    -   The splitting logic is integrated into `bot/helper/listeners/task_listener.py` and is triggered automatically after a video is processed.
+-   **User Interface:**
+    -   When a file is split, each part is uploaded with a rich, detailed caption.
+    -   The caption includes information about the original file, the part number, total parts, total size, duration, and details about the video and audio streams that were kept or removed during processing.
+
+### 2. Efficient Stream Downloader
+
+-   **Description:** A new downloader for Telegram files has been implemented to improve download speeds for large files.
+-   **Implementation:**
+    -   A new module `bot/helper/telegram_stream_downloader.py` was created.
+    -   It uses Pyrogram's `stream_media` method, which is more efficient for downloading large files than the default `download_media` method.
+    -   The class is named `TelegramStreamDownloader` to accurately reflect its single-threaded, streaming nature.
+    -   The new downloader is integrated into `bot/helper/mirror_leech_utils/download_utils/telegram_download.py` and is used automatically for files larger than a configurable size (`TG_PARALLEL_MIN_SIZE`).
+    -   It includes a fallback to the normal download method if the stream download fails.
+-   **Configuration:**
+    -   New configuration options have been added to `config_sample.py` and `bot/core/config_manager.py`:
+        -   `MAX_PARALLEL_CHUNKS`: The number of parallel chunks (note: the current implementation is single-threaded, but this is kept for future enhancements).
+        -   `CHUNK_SIZE`: The chunk size in MB.
+        -   `TG_PARALLEL_MIN_SIZE`: The minimum file size to trigger the stream downloader.
+
+## 🐛 Bug Fixes
+
+A number of critical bugs have been fixed to improve the bot's stability and reliability.
+
+1.  **`ValueError` in Video Processing:**
+    -   **Problem:** The `process_video` function in `bot/helper/video_utils/processor.py` had an inconsistent return signature, sometimes returning 1, 2, or 3 values. This caused a `ValueError: not enough values to unpack` in `task_listener.py`.
+    -   **Fix:** The `process_video` function was refactored to always return three values (`path`, `media_info`, `None`), ensuring a consistent API.
+
+2.  **`MESSAGE_NOT_MODIFIED` Flood:**
+    -   **Problem:** When a crash occurred during video processing, the progress update timer was not being cancelled correctly, leading to a flood of "Message not modified" errors from Telegram.
+    -   **Fix:** A safeguard was added to the `_update_ffmpeg_progress` method in `task_listener.py` to check if the message content has changed before attempting to edit it. This prevents the flood.
+
+3.  **`NameError` in Downloader:**
+    -   **Problem:** The `telegram_download.py` file was missing an import for the `Config` object, causing a `NameError` when checking `TG_PARALLEL_MIN_SIZE`.
+    -   **Fix:** The missing import `from ....core.config_manager import Config` was added.
+
+4.  **`AttributeError` in Downloader:**
+    -   **Problem:** The stream downloader was using outdated Pyrogram v1 type checks (`types.MessageMediaVideo`), which caused an `AttributeError` with Pyrogram v2.
+    -   **Fix:** The `get_file_location` method was refactored to use the correct, high-level Pyrogram v2 types (`pyrogram.types.Document`, `pyrogram.types.Video`, etc.).
+
+5.  **`Is a directory` Error in Downloader:**
+    -   **Problem:** The stream downloader was being called with a directory path instead of a full file path, causing an `[Errno 21] Is a directory` error when trying to open the path for writing.
+    -   **Fix:** The path handling logic was refactored. The downloader now constructs the full output path internally, and the calling code in `telegram_download.py` passes only the destination directory.
+
+6.  **`TypeError` with Async Generator:**
+    -   **Problem:** When calculating the total size of split files, the `sum()` function was being called on an asynchronous generator, causing a `TypeError`.
+    -   **Fix:** The code was changed to use a synchronous generator with `ospath.getsize()` to correctly calculate the sum.
+
+7.  **`NameError` in Stream Downloader:**
+    -   **Problem:** The `telegram_stream_downloader.py` file was missing an import for `aiofiles`.
+    -   **Fix:** The missing import was added.
+
+## 📝 Modified and New Files
+
+### New Files:
+-   `bot/helper/utilities/precision_split.py`
+-   `bot/helper/telegram_stream_downloader.py`
+
+### Modified Files:
+-   `bot/core/config_manager.py`
+-   `config_sample.py`
+-   `bot/helper/listeners/task_listener.py`
+-   `bot/helper/mirror_leech_utils/download_utils/telegram_download.py`
+-   `bot/helper/video_utils/processor.py`
