@@ -139,7 +139,7 @@ async def process_video(path, listener):
          kept_indices = {s['index'] for s in streams_to_keep_in_ffmpeg}
          listener.streams_removed = [s for s in all_streams if s['index'] not in kept_indices]
          listener.art_streams = art_streams
-         return path, media_info
+         return path, media_info, False
 
     cmd = ['ffmpeg', '-i', path, '-v', 'error']
     for stream in streams_to_keep_in_ffmpeg:
@@ -167,7 +167,7 @@ async def process_video(path, listener):
 
         LOGGER.info("Final decision: Kept %d streams, Removed %d streams.", len(listener.streams_kept), len(listener.streams_removed))
 
-        return final_path, media_info
+        return final_path, media_info, True
 
-    return None, None
+    return None, None, False
 
