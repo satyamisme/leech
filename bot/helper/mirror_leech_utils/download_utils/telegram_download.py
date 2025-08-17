@@ -7,6 +7,7 @@ from .... import (
     task_dict,
     task_dict_lock,
 )
+from ....core.config_manager import Config
 from ....core.mltb_client import TgClient
 from ...ext_utils.task_manager import check_running_tasks, stop_duplicate_check
 from ...mirror_leech_utils.status_utils.queue_status import QueueStatus
@@ -28,6 +29,8 @@ class TelegramDownloadHelper:
 
     @property
     def speed(self):
+        if self.parallel_downloader:
+            return self.listener.download_speed
         return self._processed_bytes / (time() - self._start_time)
 
     @property

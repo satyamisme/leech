@@ -67,6 +67,7 @@ class TaskListener(TaskConfig):
         self.status_message = None
         self.start_time = time()
         self.last_ffmpeg_progress_text = None
+        self.download_speed = 0
 
     async def on_task_created(self):
         self.status_message = await send_message(self.message, "🎬 Analyzing Streams... ⏳")
@@ -109,9 +110,11 @@ class TaskListener(TaskConfig):
             )
 
     def onDownloadProgress(self, current, total, speed):
-        # This is a dummy method to prevent crashes.
-        # A proper implementation would update the status message.
-        pass
+        if self.is_cancelled:
+            return
+        self.processed_bytes = current
+        self.size = total
+        self.download_speed = speed
 
     async def on_download_complete(self):
         await sleep(2)
@@ -242,7 +245,20 @@ class TaskListener(TaskConfig):
                     if self.is_cancelled:
                         return
 
-                await self.on_upload_complete(None, None, None, None)
+                # Final cleanup for split leech tasks
+                await clean_download(self.dir)
+                async with task_dict_lock:
+                    if self.mid in task_dict:
+                        del task_dict[self.mid]
+                    count = len(task_dict)
+                if count == 0:
+                    await self.clean()
+                else:
+                    await update_status_message(self.message.chat.id)
+                async with queue_dict_lock:
+                    if self.mid in non_queued_up:
+                        non_queued_up.remove(self.mid)
+                await start_from_queued()
                 return
 
         if self.join:
