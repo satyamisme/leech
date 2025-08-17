@@ -26,12 +26,9 @@ class TelegramDownloadHelper:
         self._id = ""
         self.session = ""
         self.parallel_downloader = None
-        self.download_speed = 0
 
     @property
     def speed(self):
-        if self.parallel_downloader:
-            return self.download_speed
         return self._processed_bytes / (time() - self._start_time)
 
     @property
@@ -54,12 +51,6 @@ class TelegramDownloadHelper:
         else:
             LOGGER.info(f"Start Queued Download from Telegram: {self._listener.name}")
 
-    def onDownloadProgress(self, current, total, speed):
-        if self._listener.is_cancelled:
-            return
-        self._processed_bytes = current
-        self._listener.size = total
-        self.download_speed = speed
 
     async def _on_download_progress(self, current, _):
         if self._listener.is_cancelled:
@@ -180,13 +171,17 @@ class TelegramDownloadHelper:
                 if self._listener.size > Config.TG_PARALLEL_MIN_SIZE:
                     from bot.helper.telegram_parallel_downloader import TelegramParallelDownloader
                     client = TgClient.user if self.session == "user" else self._listener.client
-                    downloader = TelegramParallelDownloader(client, message, path, self)
+                    downloader = TelegramParallelDownloader(client, message, path)
                     self.parallel_downloader = downloader
-                    success = await downloader.download()
-                    if success:
-                        await self._on_download_complete()
-                        return
-                    else:
+                    try:
+                        result_path = await downloader.download()
+                        if result_path:
+                            await self._on_download_complete()
+                            return
+                        elif not self._listener.is_cancelled:
+                             LOGGER.warning("Falling back to normal download after parallel failure")
+                    except Exception as e:
+                        LOGGER.error(f"Parallel download failed with exception: {e}")
                         LOGGER.warning("Falling back to normal download after parallel failure")
 
                 await self._download(message, path)
