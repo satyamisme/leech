@@ -1,5 +1,6 @@
 import asyncio
 import os
+import aiofiles
 from typing import List
 from pyrogram import Client
 from pyrogram.errors import FloodWait
