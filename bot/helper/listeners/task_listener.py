@@ -66,6 +66,7 @@ class TaskListener(TaskConfig):
         self.media_info = None
         self.status_message = None
         self.start_time = time()
+        self.last_ffmpeg_progress_text = None
 
     async def on_task_created(self):
         self.status_message = await send_message(self.message, "🎬 Analyzing Streams... ⏳")
@@ -326,7 +327,9 @@ class TaskListener(TaskConfig):
                 task = task_dict[self.mid]
                 progress = task.progress()
                 text = f"🎬 **Processing Video:** `{self.name}` 🔄\n{get_progress_bar_string(progress)} {progress}"
-                await edit_message(self.status_message, text)
+                if text != self.last_ffmpeg_progress_text:
+                    await edit_message(self.status_message, text)
+                    self.last_ffmpeg_progress_text = text
 
     def _format_stream_info(self, stream, stream_type):
         details = []
