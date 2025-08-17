@@ -50,6 +50,8 @@ class TelegramStreamDownloader:
 
             LOGGER.info(f"Starting parallel download to: {self.output_path}")
 
+            os.makedirs(os.path.dirname(self.output_path), exist_ok=True)
+
             # Pre-allocate file
             with open(self.output_path, "wb") as f:
                 f.truncate(self.file_size)

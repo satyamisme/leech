@@ -187,7 +187,7 @@ class TaskListener(TaskConfig):
                 tg_uploader._sent_msg = self.status_message or self.message
                 await tg_uploader._user_settings()
 
-                total_gb = sum([await aiopath.getsize(f) for f in split_files]) / (1024**3)
+                total_gb = sum(ospath.getsize(f) for f in split_files) / (1024**3)
 
                 # Try to get duration from media_info, otherwise format it from get_readable_time
                 duration_str = self.media_info.get("duration", "Unknown")
@@ -234,6 +234,7 @@ class TaskListener(TaskConfig):
                         caption += f"\n\n✅ Upload Complete (Part {i}/{len(split_files)})\n"
                         caption += "✨ All parts uploaded successfully!\n🔗 Files are now available in your chat.\n⚡️ @genambot"
 
+                    tg_uploader._up_path = file_path
                     await tg_uploader._upload_file(caption, file_name, file_path)
                     if self.is_cancelled:
                         return
