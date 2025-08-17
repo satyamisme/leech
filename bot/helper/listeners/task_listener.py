@@ -163,7 +163,7 @@ class TaskListener(TaskConfig):
                 await edit_message(self.status_message, f"🎬 **Processing Video:** `{self.name}` 🔄")
 
             interval = SetInterval(3, self._update_ffmpeg_progress)
-            processed_path, self.media_info = await process_video(up_path, self)
+            processed_path, self.media_info, _ = await process_video(up_path, self)
             interval.cancel()
 
             if self.is_cancelled: return
