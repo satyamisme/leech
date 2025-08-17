@@ -11,6 +11,7 @@ from asyncio import (
 
 from ... import user_data, bot_loop
 from ...core.config_manager import Config
+import math
 from ..telegram_helper.button_build import ButtonMaker
 from .telegraph_helper import telegraph
 from .help_messages import (
@@ -251,3 +252,15 @@ def loop_thread(func):
         return future.result() if wait else future
 
     return wrapper
+
+
+def calculate_dynamic_chunk_size(file_size):
+    """Smart chunk sizing based on file size"""
+    if file_size <= 100 * 1024 * 1024:  # < 100MB
+        return 1 * 1024 * 1024  # 1MB chunks
+    elif file_size <= 1 * 1024 * 1024 * 1024:  # < 1GB
+        return 4 * 1024 * 1024  # 4MB chunks
+    else:
+        # Scale chunk size logarithmically for huge files
+        base_chunk = 8 * 1024 * 1024  # 8MB
+        return min(base_chunk * (1 + int(math.log(file_size / (1024**3), 2))), 64 * 1024 * 1024)  # Max 64MB
