@@ -24,6 +24,7 @@ class TelegramDownloadHelper:
         self._listener = listener
         self._id = ""
         self.session = ""
+        self.parallel_downloader = None
 
     @property
     def speed(self):
@@ -161,8 +162,22 @@ class TelegramDownloadHelper:
                             if self._id in GLOBAL_GID:
                                 GLOBAL_GID.remove(self._id)
                         return
+
                 self._start_time = time()
                 await self._on_download_start(gid, add_to_queue)
+
+                if self._listener.size > Config.TG_PARALLEL_MIN_SIZE:
+                    from bot.helper.telegram_parallel_downloader import TelegramParallelDownloader
+                    client = TgClient.user if self.session == "user" else self._listener.client
+                    downloader = TelegramParallelDownloader(client, message, path, self)
+                    self.parallel_downloader = downloader
+                    success = await downloader.download()
+                    if success:
+                        await self._on_download_complete()
+                        return
+                    else:
+                        LOGGER.warning("Falling back to normal download after parallel failure")
+
                 await self._download(message, path)
             else:
                 await self._on_download_error("File already being downloaded!")
@@ -173,6 +188,8 @@ class TelegramDownloadHelper:
 
     async def cancel_task(self):
         self._listener.is_cancelled = True
+        if self.parallel_downloader:
+            self.parallel_downloader.cancel()
         LOGGER.info(
             f"Cancelling download on user request: name: {self._listener.name} id: {self._id}"
         )
