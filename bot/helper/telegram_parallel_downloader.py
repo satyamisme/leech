@@ -27,10 +27,20 @@ class TelegramParallelDownloader:
 
     async def get_file_info(self):
         """Fetch media info (size, file_id) from message"""
-        if not self.message.media:
+        media = (
+            self.message.document
+            or self.message.photo
+            or self.message.video
+            or self.message.audio
+            or self.message.voice
+            or self.message.video_note
+            or self.message.sticker
+            or self.message.animation
+            or None
+        )
+        if media is None:
             raise ValueError("Message has no media")
 
-        media = self.message.media.value
         self.file_size = media.file_size
         return media
 

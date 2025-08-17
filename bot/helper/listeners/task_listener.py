@@ -67,7 +67,6 @@ class TaskListener(TaskConfig):
         self.status_message = None
         self.start_time = time()
         self.last_ffmpeg_progress_text = None
-        self.download_speed = 0
 
     async def on_task_created(self):
         self.status_message = await send_message(self.message, "🎬 Analyzing Streams... ⏳")
@@ -109,12 +108,6 @@ class TaskListener(TaskConfig):
                 self.message.chat.id, self.message.link, self.tag
             )
 
-    def onDownloadProgress(self, current, total, speed):
-        if self.is_cancelled:
-            return
-        self.processed_bytes = current
-        self.size = total
-        self.download_speed = speed
 
     async def on_download_complete(self):
         await sleep(2)
