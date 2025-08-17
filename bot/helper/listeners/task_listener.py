@@ -108,6 +108,11 @@ class TaskListener(TaskConfig):
                 self.message.chat.id, self.message.link, self.tag
             )
 
+    def onDownloadProgress(self, current, total, speed):
+        # This is a dummy method to prevent crashes.
+        # A proper implementation would update the status message.
+        pass
+
     async def on_download_complete(self):
         await sleep(2)
         if self.is_cancelled:
