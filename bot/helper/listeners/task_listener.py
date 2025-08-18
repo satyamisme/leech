@@ -22,7 +22,7 @@ from ... import (
 from ...core.config_manager import Config
 from ...core.torrent_manager import TorrentManager
 from ..common import TaskConfig
-from ..ext_utils.bot_utils import sync_to_async
+from ..ext_utils.bot_utils import sync_to_async, get_readable_time, SetInterval
 from ..ext_utils.db_handler import database
 from ..ext_utils.files_utils import (
     get_path_size,
@@ -36,7 +36,7 @@ from ..ext_utils.files_utils import (
     get_mime_type,
 )
 from ..ext_utils.links_utils import is_gdrive_id
-from ..ext_utils.status_utils import get_readable_file_size, get_readable_time
+from ..ext_utils.status_utils import get_readable_file_size
 from ..ext_utils.task_manager import start_from_queued, check_running_tasks
 from ..mirror_leech_utils.gdrive_utils.upload import GoogleDriveUpload
 from ..mirror_leech_utils.rclone_utils.transfer import RcloneTransferHelper
@@ -56,7 +56,7 @@ from ..telegram_helper.message_utils import (
     delete_message,
 )
 from ..ext_utils.status_utils import get_progress_bar_string
-from bot.helper.utilities.smart_split import smart_split
+from bot.helper.utilities.precision_split import precision_split_if_needed
 
 class TaskListener(TaskConfig):
     def __init__(self):
@@ -163,98 +163,166 @@ class TaskListener(TaskConfig):
             if self.is_cancelled: return
             self.name = up_path.replace(f"{self.dir}/", "").split("/", 1)[0]
 
-        mime_type = await sync_to_async(get_mime_type, up_path)
-        if mime_type.startswith("video/"):
+        if await is_video(up_path):
             if self.status_message:
-                await edit_message(self.status_message, f"🎬 **Processing Video:** `{self.name}`\n\n⏳ This may take a while...")
-
-            processed_path, self.media_info, self.kept_indices = await process_video(up_path, self)
-
+                await edit_message(self.status_message, f" **Processing Video:** `{self.name}` ")
+            interval = SetInterval(3, self._update_ffmpeg_progress)
+            processed_path, self.media_info, _ = await process_video(up_path, self)
+            interval.cancel()
             if self.is_cancelled: return
             if processed_path:
                 up_path = processed_path
                 self.name = up_path.replace(f"{self.dir}/", "").split("/", 1)[0]
 
-        if self.is_leech:
-            if self.status_message:
-                await edit_message(self.status_message, f"🔪 **Splitting file:** `{self.name}`")
+            from bot.helper.utilities.precision_split import precision_split_if_needed
+            from time import strftime
 
-            upload_dir = ospath.dirname(up_path)
-            split_files = await sync_to_async(smart_split, up_path, upload_dir)
-
+            split_files = await sync_to_async(precision_split_if_needed, up_path)
             if len(split_files) > 1:
-                if self.status_message:
-                    await edit_message(self.status_message, f"📤 **Uploading {len(split_files)} parts:** `{self.name}`")
-
                 LOGGER.info(f"Splitting successful. Uploading {len(split_files)} parts.")
+                upload_dir = ospath.dirname(split_files[0])
                 tg_uploader = TelegramUploader(self, upload_dir)
                 tg_uploader._sent_msg = self.status_message or self.message
                 await tg_uploader._user_settings()
 
+                total_gb = sum(os.path.getsize(f) for f in split_files) / (1024**3)
+
+                duration_str = self.media_info.get("duration", "Unknown")
+                if duration_str == "Unknown" and 'format' in self.media_info and 'duration' in self.media_info['format']:
+                    duration_str = get_readable_time(float(self.media_info['format']['duration']))
+
+                base_name = ospath.splitext(self.name)[0].replace(" - Part 001", "")
+
                 sent_messages = []
-                reply_to_message_id = None
+                last_msg = None
 
-                for file_path in split_files:
+                for i, file_path in enumerate(split_files, 1):
+                    self._up_path = file_path
+                    file_name = ospath.basename(file_path)
+                    size_gb = os.path.getsize(file_path) / (1024**3)
+
+                    if i == len(split_files) and size_gb < 0.1:
+                        self._thumb = None
+
+                    # Extract real stream info
+                    video_streams = [s for s in self.media_info['streams'] if s['codec_type'] == 'video' and s.get('disposition', {}).get('attached_pic') == 0]
+                    audio_streams = [s for s in self.media_info['streams'] if s['codec_type'] == 'audio']
+                    subtitle_streams = [s for s in self.media_info['streams'] if s['codec_type'] == 'subtitle']
+
+                    kept_video = next((s for s in video_streams if s['index'] in self.kept_indices), None)
+                    kept_audio = [s for s in audio_streams if s['index'] in self.kept_indices]
+                    removed_audio = [s for s in audio_streams if s['index'] not in self.kept_indices]
+                    removed_subtitle = [s for s in subtitle_streams if s['index'] not in self.kept_indices]
+
+                    if kept_video:
+                        width = kept_video.get('width', 0)
+                        resolution = "1080p" if width >= 1920 else "720p" if width >= 1280 else "SD"
+                        vcodec = kept_video.get('codec_name', 'N/A').upper()
+                    else:
+                        resolution = "N/A"
+                        vcodec = "N/A"
+
+                    langs = ','.join([a.get('tags', {}).get('language', 'und').upper() for a in kept_audio])
+
+                    caption = (
+                        f"🎬 {base_name}\n"
+                        f"📁 Part {i} of {len(split_files)} | 📂 Total: {total_gb:.2f} GB | ⏱️ {duration_str}\n"
+                        f"📊 {vcodec}, {resolution}, {langs} • Split\n"
+                        f"📡 Source: @ViewCinemas\n\n"
+                        f"📽️ `{os.path.basename(up_path)}`\n"
+                        f"📏 {size_gb:.2f} GB | 📅 {strftime('%d %b %Y')}\n\n"
+                    )
+
+                    if kept_video:
+                        caption += "**Streams Kept:**\n"
+                        caption += f"🎥 {vcodec}, {kept_video.get('profile', 'N/A')}, {resolution}, {kept_video.get('r_frame_rate', '24/1')}\n"
+                        for a in kept_audio:
+                            lang = a.get('tags', {}).get('language', 'und').upper()
+                            ch = a.get('channels', 2)
+                            layout = 'stereo' if ch == 2 else 'mono' if ch == 1 else f'{ch}ch'
+                            acodec = a.get('codec_name', 'N/A')
+                            caption += f"🔊 {acodec} {lang}, {layout}\n"
+
+                    if removed_audio or removed_subtitle:
+                        caption += "**Streams Removed:**\n"
+                        for a in removed_audio:
+                            lang = a.get('tags', {}).get('language', 'und').upper()
+                            ch = a.get('channels', 2)
+                            layout = 'stereo' if ch == 2 else 'mono' if ch == 1 else f'{ch}ch'
+                            acodec = a.get('codec_name', 'N/A')
+                            default = " (Default)" if a.get('disposition', {}).get('default') else ""
+                            caption += f"🚫 {acodec} {lang}, {layout}{default}\n"
+                        for s in removed_subtitle:
+                            lang = s.get('tags', {}).get('language', 'und').upper()
+                            codec = s.get('codec_name', 'N/A')
+                            default = " (Default)" if s.get('disposition', {}).get('default') else ""
+                            caption += f"🚫 {codec} {lang}{default}\n"
+
+                    if i > 1:
+                        prev_name = f"{base_name} - Part {i-1:03d}.mkv"
+                        caption += f"\n⬅️ Prev Part: `{prev_name}`"
+                    if i < len(split_files):
+                        next_name = f"{base_name} - Part {i+1:03d}.mkv"
+                        caption += f"\n➡️ Next Part: `{next_name}`"
+
+                    if i == len(split_files):
+                        caption += (
+                            f"\n\n✅ Upload Complete (Part {i}/{len(split_files)})\n"
+                            f"✨ All parts uploaded successfully!\n"
+                            f"🔗 Files are now available in your chat.\n"
+                            f"⚡️ @genambot"
+                        )
+
+                    tg_uploader._reply_to = last_msg.id if last_msg else None
+                    async for sent_msg in tg_uploader.upload():
+                        if sent_msg:
+                            sent_messages.append(sent_msg)
+                            last_msg = sent_msg
+                            await self._send_leech_completion_message(sent_msg)
+                        if self.is_cancelled:
+                            break
                     if self.is_cancelled:
-                        LOGGER.info("Upload cancelled by user.")
-                        break
+                        return
 
-                    tg_uploader._up_path = file_path
-                    tg_uploader._reply_to = reply_to_message_id
+                if len(sent_messages) > 1:
+                    part_links = []
+                    for i, msg in enumerate(sent_messages, 1):
+                        size_gb = sizes[i-1] / (1024**3)
+                        file_name = ospath.basename(split_files[i-1])
+                        part_links.append(f"{i}. [{file_name}]({msg.link}) ({size_gb:.2f} GB)")
 
-                    # The original uploader is a generator, so we iterate
-                    async for sent_message in tg_uploader.upload():
-                        if sent_message:
-                            sent_messages.append(sent_message)
-                            reply_to_message_id = sent_message.id
-                        else:
-                            LOGGER.error(f"Failed to upload part: {file_path}. Stopping upload process.")
-                            await self.on_upload_error("A part failed to upload, stopping.")
-                            return
+                    summary = (
+                        f"✅ **Upload Complete: {base_name}**\n"
+                        f"✨ All parts are now available in your chat.\n\n"
+                        f"📁 **Uploaded Parts ({len(split_files)}):**\n"
+                        + "\n".join(part_links) + "\n\n"
+                        f"📊 **Video Info:** {vcodec}, {resolution}, {langs}\n"
+                        f"⏱️ **Duration:** {duration_str}\n"
+                        f"📦 **Total Size:** {total_gb:.2f} GB\n\n"
+                        f"🔊 **Audio Tracks Kept:** {', '.join([a.get('tags', {}).get('language', 'und').upper() for a in kept_audio])}\n"
+                        f"🚫 **Removed:** {', '.join([a.get('tags', {}).get('language', 'und').upper() for a in removed_audio])}\n"
+                        f"🚫 **Subtitles Removed:** {', '.join([s.get('tags', {}).get('language', 'und').upper() for s in removed_subtitle])}\n\n"
+                        f"⚡️ @genambot"
+                    )
+                    try:
+                        await self.message.reply_text(summary, disable_web_page_preview=True, parse_mode='Markdown')
+                    except Exception as e:
+                        LOGGER.error(f"Failed to send summary: {e}")
 
-                if self.is_cancelled:
-                    await self.on_upload_error("Upload was cancelled.")
-                    return
-
-                if sent_messages:
-                    await self._send_master_summary(sent_messages, split_files)
-
-                if self.status_message:
-                    await delete_message(self.status_message)
+                await clean_download(self.dir)
+                async with task_dict_lock:
+                    if self.mid in task_dict:
+                        del task_dict[self.mid]
+                    count = len(task_dict)
+                if count == 0:
+                    await self.clean()
+                else:
+                    await update_status_message(self.message.chat.id)
+                async with queue_dict_lock:
+                    if self.mid in non_queued_up:
+                        non_queued_up.remove(self.mid)
+                await start_from_queued()
                 return
-
-        # Fallback to original leech logic for single files
-        if self.is_leech:
-            if self.status_message:
-                await edit_message(self.status_message, f"🎬 **Uploading:** `{self.name}` 📤")
-            LOGGER.info(f"Leech Name: {self.name}")
-            upload_path = up_path
-            if await aiopath.isfile(upload_path):
-                upload_path = ospath.dirname(upload_path)
-            tg = TelegramUploader(self, upload_path)
-            async with task_dict_lock:
-                task_dict[self.mid] = TelegramStatus(self, tg, gid, "up")
-
-            async for sent_message in tg.upload():
-                if self.is_cancelled:
-                    break
-                if sent_message:
-                    await self._send_leech_completion_message(sent_message)
-
-            if self.is_cancelled: return
-            await clean_download(self.dir)
-            async with task_dict_lock:
-                if self.mid in task_dict:
-                    del task_dict[self.mid]
-                count = len(task_dict)
-            if count == 0:
-                await self.clean()
-            else:
-                await update_status_message(self.message.chat.id)
-            async with queue_dict_lock:
-                if self.mid in non_queued_up:
-                    non_queued_up.remove(self.mid)
-            await start_from_queued()
 
         elif is_gdrive_id(self.up_dest):
             LOGGER.info(f"Gdrive Upload Name: {self.name}")
@@ -268,58 +336,6 @@ class TaskListener(TaskConfig):
             async with task_dict_lock:
                 task_dict[self.mid] = RcloneStatus(self, RCTransfer, gid, "up")
             await RCTransfer.upload(up_path)
-
-    async def _send_master_summary(self, sent_messages, file_paths):
-        if not file_paths:
-            return
-
-        base_name = ospath.splitext(ospath.basename(file_paths[0]))[0]
-        if " - Part 001" in base_name:
-            base_name = base_name.replace(" - Part 001", "")
-
-        total_size_bytes = sum(os.path.getsize(f) for f in file_paths)
-        total_size_gb = total_size_bytes / (1024**3)
-
-        duration_str = "N/A"
-        if self.media_info and 'format' in self.media_info and 'duration' in self.media_info['format']:
-            duration_str = get_readable_time(float(self.media_info['format']['duration']))
-
-        vcodec, resolution, audio_langs_str = "N/A", "N/A", "N/A"
-        if self.media_info:
-            video_streams = [s for s in self.media_info.get('streams', []) if s.get('codec_type') == 'video']
-            if video_streams:
-                vstream = video_streams[0]
-                vcodec = vstream.get('codec_name', 'N/A')
-                resolution = f"{vstream.get('width', 'N/A')}x{vstream.get('height', 'N/A')}"
-
-            audio_streams = [s for s in self.media_info.get('streams', []) if s.get('codec_type') == 'audio']
-            if audio_streams:
-                 audio_langs = {s.get('tags', {}).get('language', 'und') for s in audio_streams}
-                 audio_langs_str = ', '.join(lang.upper() for lang in audio_langs) if audio_langs else "N/A"
-
-        part_links = []
-        for i, msg in enumerate(sent_messages):
-            size_gb = os.path.getsize(file_paths[i]) / (1024**3)
-            file_name = ospath.basename(file_paths[i])
-            part_links.append(f"**{i+1}.** [{file_name}]({msg.link}) ({size_gb:.2f} GB)")
-
-        summary = (
-            f"✅ **Upload Complete: {base_name}**\n\n"
-            f"📁 **Uploaded Parts ({len(sent_messages)}):**\n"
-            + "\n".join(part_links) + "\n\n"
-            f"📊 **Video Info:** `{vcodec}`, `{resolution}`, `{audio_langs_str}`\n"
-            f"⏱️ **Duration:** `{duration_str}`\n"
-            f"📦 **Total Size:** `{total_size_gb:.2f} GB`\n\n"
-            f"🔊 **Audio Tracks Kept:** `{', '.join(self.kept_audio_langs) or 'None'}`\n"
-            f"🚫 **Removed Audio:** `{', '.join(self.removed_audio_langs) or 'None'}`\n"
-            f"🚫 **Removed Subtitles:** `{', '.join(self.removed_subtitle_langs) or 'None'}`\n\n"
-            f"⚡️ @{Config.BOT_USERNAME}"
-        )
-
-        try:
-            await self.message.reply_text(summary, disable_web_page_preview=True, quote=True)
-        except Exception as e:
-            LOGGER.error(f"Failed to send master summary: {e}")
 
     def _format_stream_info(self, stream):
         details = []

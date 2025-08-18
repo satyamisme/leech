@@ -1,198 +1,55 @@
-from asyncio import Lock, sleep
-from time import time
-from pyrogram.errors import FloodWait, FloodPremiumWait
-
-from .... import (
-    LOGGER,
-    task_dict,
-    task_dict_lock,
-)
-from ....core.config_manager import Config
-from ....core.mltb_client import TgClient
-from ...ext_utils.task_manager import check_running_tasks, stop_duplicate_check
-from ...mirror_leech_utils.status_utils.queue_status import QueueStatus
-from ...mirror_leech_utils.status_utils.telegram_status import TelegramStatus
-from ...telegram_helper.message_utils import send_status_message
-
-global_lock = Lock()
-GLOBAL_GID = set()
-
+from bot import LOGGER
+from ...ext_utils.bot_utils import async_to_sync
+from ...ext_utils.files_utils import get_path_size
+from ...ext_utils.status_utils import get_readable_file_size
+from ...telegram_helper.message_utils import update_status_message
 
 class TelegramDownloadHelper:
     def __init__(self, listener):
-        self._processed_bytes = 0
-        self._start_time = 1
+        self._client = listener.client
         self._listener = listener
-        self._id = ""
-        self.session = ""
-        self.parallel_downloader = None
+        self._path = ""
+        self._total_files = 0
+        self._total_folders = 0
+        self._folder_name = ""
+        self._is_cancelled = False
 
-    @property
-    def speed(self):
-        return self._processed_bytes / (time() - self._start_time)
-
-    @property
-    def processed_bytes(self):
-        return self._processed_bytes
-
-    async def _on_download_start(self, file_id, from_queue):
-        async with global_lock:
-            GLOBAL_GID.add(file_id)
-        self._id = file_id
-        async with task_dict_lock:
-            task_dict[self._listener.mid] = TelegramStatus(
-                self._listener, self, file_id[:12], "dl"
-            )
-        if not from_queue:
-            await self._listener.on_download_start()
-            if self._listener.multi <= 1:
-                await send_status_message(self._listener.message)
-            LOGGER.info(f"Download from Telegram: {self._listener.name}")
-        else:
-            LOGGER.info(f"Start Queued Download from Telegram: {self._listener.name}")
-
-
-    async def _on_download_progress(self, current, _):
-        if self._listener.is_cancelled:
-            if self.session == "user":
-                TgClient.user.stop_transmission()
+    async def add_download(self, message, path, folder_name=""):
+        try:
+            self._path = path
+            self._folder_name = folder_name.strip("/")
+            if not self._listener.is_recursive:
+                self._total_files = 1
+                self._total_folders = 0
             else:
-                TgClient.bot.stop_transmission()
-        self._processed_bytes = current
+                pass
 
-    async def _on_download_error(self, error):
-        async with global_lock:
-            if self._id in GLOBAL_GID:
-                GLOBAL_GID.remove(self._id)
-        await self._listener.on_download_error(error)
-
-    async def _on_download_complete(self):
-        async with global_lock:
-            if self._id in GLOBAL_GID:
-                GLOBAL_GID.remove(self._id)
-        await self._listener.on_download_complete()
+            if await self._download(message, path):
+                await self._listener.on_download_complete()
+        except Exception as e:
+            if not self._is_cancelled:
+                await self._listener.on_download_error(str(e))
 
     async def _download(self, message, path):
-        import aiofiles
-        import os
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        self._start_time = time()
-        client = TgClient.user if self.session == "user" else self._listener.client
         try:
-            async with aiofiles.open(path, "wb") as f:
-                async for chunk in client.stream_media(message, chunk_size=1024*1024):
-                    if self._listener.is_cancelled:
-                        await self._on_download_error("Cancelled by user!")
-                        return
-                    await f.write(chunk)
-                    self._processed_bytes += len(chunk)
-        except Exception as e:
-            LOGGER.error(str(e))
-            await self._on_download_error(str(e))
-            return
-        await self._on_download_complete()
-
-    async def add_download(self, message, path, session):
-        self.session = session
-        if not self.session:
-            if self._listener.user_transmission and self._listener.is_super_chat:
-                self.session = "user"
-                message = await TgClient.user.get_messages(
-                    chat_id=message.chat.id, message_ids=message.id
-                )
-            else:
-                self.session = "bot"
-        media = (
-            message.document
-            or message.photo
-            or message.video
-            or message.audio
-            or message.voice
-            or message.video_note
-            or message.sticker
-            or message.animation
-            or None
-        )
-
-        if media is not None:
-            self._listener.is_file = True
-            async with global_lock:
-                download = media.file_unique_id not in GLOBAL_GID
-
-            if download:
-                if not self._listener.name:
-                    if hasattr(media, "file_name") and media.file_name:
-                        self._listener.name = media.file_name
-                    else:
-                        self._listener.name = "None"
-
-                file_path = f"{path}{self._listener.name}"
-                self._listener.size = media.file_size
-                gid = media.file_unique_id
-
-                msg, button = await stop_duplicate_check(self._listener)
-                if msg:
-                    await self._listener.on_download_error(msg, button)
-                    return
-
-                add_to_queue, event = await check_running_tasks(self._listener)
-                if add_to_queue:
-                    LOGGER.info(f"Added to Queue/Download: {self._listener.name}")
-                    async with task_dict_lock:
-                        task_dict[self._listener.mid] = QueueStatus(
-                            self._listener, gid, "dl"
-                        )
-                    await self._listener.on_download_start()
-                    if self._listener.multi <= 1:
-                        await send_status_message(self._listener.message)
-                    await event.wait()
-                    if self.session == "bot":
-                        message = await self._listener.client.get_messages(
-                            chat_id=message.chat.id, message_ids=message.id
-                        )
-                    else:
-                        message = await TgClient.user.get_messages(
-                            chat_id=message.chat.id, message_ids=message.id
-                        )
-                    if self._listener.is_cancelled:
-                        async with global_lock:
-                            if self._id in GLOBAL_GID:
-                                GLOBAL_GID.remove(self._id)
-                        return
-
-                self._start_time = time()
-                await self._on_download_start(gid, add_to_queue)
-
-                if self._listener.size > Config.TG_PARALLEL_MIN_SIZE:
-                    from bot.helper.telegram_stream_downloader import TelegramStreamDownloader
-                    client = TgClient.user if self.session == "user" else self._listener.client
-                    downloader = TelegramStreamDownloader(client, message, path)
-                    self.parallel_downloader = downloader
-                    try:
-                        result_path = await downloader.download()
-                        if result_path:
-                            self._listener.name = result_path.rsplit("/", 1)[-1]
-                            await self._on_download_complete()
-                            return
-                        elif not self._listener.is_cancelled:
-                             LOGGER.warning("Falling back to normal download after parallel failure")
-                    except Exception as e:
-                        LOGGER.error(f"Stream download failed with exception: {e}")
-                        LOGGER.warning("Falling back to normal download after parallel failure")
-
-                await self._download(message, file_path)
-            else:
-                await self._on_download_error("File already being downloaded!")
-        else:
-            await self._on_download_error(
-                "No document in the replied message! Use SuperGroup incase you are trying to download with User session!"
+            await self._client.download_media(
+                message,
+                file_name=path,
+                progress=self._progress,
+                progress_args=(message,)
             )
+            return path
+        except Exception as e:
+            if not self._is_cancelled:
+                LOGGER.error(f"Download error: {e}")
+                raise
 
-    async def cancel_task(self):
-        self._listener.is_cancelled = True
-        if self.parallel_downloader:
-            self.parallel_downloader.cancel()
-        LOGGER.info(
-            f"Cancelling download on user request: name: {self._listener.name} id: {self._id}"
-        )
-        await self._on_download_error("Stopped by user!")
+    async def _progress(self, current, total, message):
+        if self._listener.is_cancelled:
+            raise Exception("Download cancelled")
+        self._listener.downloaded_bytes = current
+        self._listener.total_bytes = total
+        await self._listener.on_download_progress()
+
+    async def cancel_download(self):
+        self._is_cancelled = True
