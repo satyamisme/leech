@@ -173,13 +173,13 @@ class TaskListener(TaskConfig):
                 up_path = processed_path
                 self.name = up_path.replace(f"{self.dir}/", "").split("/", 1)[0]
 
-            # === [FIXED] Binary Search Split + Rich UI with Navigation ===
-            from bot.helper.utilities.precision_split import binary_search_split_if_needed
+            # === [FIXED] Smart Split (mkvmerge) + Rich UI with Navigation ===
+            from bot.helper.utilities.smart_split import smart_split_if_needed
             from bot.helper.ext_utils.media_utils import get_media_info
             import os
             from time import strftime
 
-            split_files = await sync_to_async(binary_search_split_if_needed, up_path)
+            split_files = await sync_to_async(smart_split_if_needed, up_path)
 
             if len(split_files) > 1:
                 LOGGER.info(f"Splitting successful. Uploading {len(split_files)} parts.")
@@ -188,42 +188,22 @@ class TaskListener(TaskConfig):
                 tg_uploader._sent_msg = self.status_message or self.message
                 await tg_uploader._user_settings()
 
-                # ✅ Use sync os.path.getsize() — safe after download
                 total_gb = sum(os.path.getsize(f) for f in split_files) / (1024**3)
-
-                # Get duration
                 duration_str = self.media_info.get("duration", "Unknown")
                 if duration_str == "Unknown" and 'format' in self.media_info and 'duration' in self.media_info['format']:
                     duration_str = get_readable_time(float(self.media_info['format']['duration']))
 
-                # Extract base name
                 base_name = ospath.splitext(self.name)[0].replace(" - Part 001", "")
 
-                # Skip thumbnail if MJPEG present
-                try:
-                    media_info = await sync_to_async(get_media_info, split_files[0])
-                    if media_info:
-                        has_mjpeg = any(
-                            s.get('codec_name') == 'mjpeg' and s.get('codec_type') == 'video'
-                            for s in media_info.get('streams', [])
-                        )
-                        if has_mjpeg:
-                            self._thumb = None
-                except:
-                    pass
-
                 for i, file_path in enumerate(split_files, 1):
-        # The uploader class uses its own internal `_up_path` variable.
-        # We must set it directly on the uploader instance for each file.
-        tg_uploader._up_path = file_path
+                    # Set uploader path correctly to prevent FileNotFoundError
+                    tg_uploader._up_path = file_path
                     file_name = ospath.basename(file_path)
                     size_gb = os.path.getsize(file_path) / (1024**3)
 
-                    # Skip thumbnail for tiny files (like last part) to avoid errors
                     if i == len(split_files) and size_gb < 0.1:
                         self._thumb = None
 
-                    # Build caption with navigation
                     caption = (
                         f"🎬 {base_name}\n"
                         f"📁 Part {i} of {len(split_files)} | 📂 Total: {total_gb:.2f} GB | ⏱️ {duration_str}\n"
@@ -240,7 +220,6 @@ class TaskListener(TaskConfig):
                         f"🚫 subrip ENG (Default)\n"
                     )
 
-                    # Add navigation
                     if i > 1:
                         prev_name = f"{base_name} - Part {i-1:03d}.mkv"
                         caption += f"\n⬅️ Prev Part: {prev_name}"
@@ -248,7 +227,6 @@ class TaskListener(TaskConfig):
                         next_name = f"{base_name} - Part {i+1:03d}.mkv"
                         caption += f"\n➡️ Next Part: {next_name}"
 
-                    # Final message
                     if i == len(split_files):
                         caption += (
                             f"\n\n✅ Upload Complete (Part {i}/{len(split_files)})\n"
