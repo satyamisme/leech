@@ -213,8 +213,9 @@ class TaskListener(TaskConfig):
                     pass
 
                 for i, file_path in enumerate(split_files, 1):
-                    # ✅ Critical: Update _up_path so uploader can read it. Let's trust the user's reference.
-                    self._up_path = file_path
+        # The uploader class uses its own internal `_up_path` variable.
+        # We must set it directly on the uploader instance for each file.
+        tg_uploader._up_path = file_path
                     file_name = ospath.basename(file_path)
                     size_gb = os.path.getsize(file_path) / (1024**3)
 

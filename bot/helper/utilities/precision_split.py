@@ -68,14 +68,20 @@ def binary_search_split_if_needed(file_path: str) -> list:
             target_bits = TARGET_MAX_SIZE * 0.99 * 8
             ideal_duration_sec = target_bits / bitrate_bps
 
-            # Set a tighter search range based on the ideal duration
-            low = max(MIN_SPLIT_SECONDS, int(ideal_duration_sec * 0.8))
-            high = min(MAX_SPLIT_SECONDS, int(ideal_duration_sec * 1.2))
+            # Attempt to set a tighter search range
+            temp_low = max(MIN_SPLIT_SECONDS, int(ideal_duration_sec * 0.8))
+            temp_high = min(MAX_SPLIT_SECONDS, int(ideal_duration_sec * 1.2))
+
+            if temp_low > temp_high:
+                LOGGER.warning(f"Calculated ideal duration ({ideal_duration_sec:.0f}s) resulted in an invalid search range. Using full range.")
+            else:
+                low = temp_low
+                high = temp_high
             LOGGER.info(f"Bitrate-based ideal duration is ~{int(ideal_duration_sec/60)} min. Search range: [{low}s, {high}s]")
         except Exception as e:
             LOGGER.error(f"Bitrate estimation failed: {e}. Using default search range.")
     else:
-        LOGGER.warning("ffprobe failed. Using default search range [{low}s, {high}s].")
+        LOGGER.warning(f"ffprobe failed. Using default search range [{low}s, {high}s].")
 
     best_split_files = []
 
