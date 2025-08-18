@@ -45,7 +45,7 @@ def precision_split_if_needed(file_path: str) -> list:
     """
     Splits a video file if it's larger than MAX_TELEGRAM_SIZE.
     It adaptively retries with different durations to ensure parts are
-    within the target size range.
+    within the target size range, using a bidirectional search.
     """
     try:
         file_size = os.path.getsize(file_path)
@@ -61,9 +61,9 @@ def precision_split_if_needed(file_path: str) -> list:
     base_name = os.path.splitext(os.path.basename(file_path))[0]
     LOGGER.info(f"✂️ File is too large. Starting precision split for: {file_path}")
 
-    # --- Initial Duration Calculation ---
-    duration_sec = 3600  # Default to 60 minutes
+    # --- Duration Calculation Strategy ---
     probe_data = get_video_info(file_path)
+    durations_to_try = []
 
     if probe_data and probe_data.get("format"):
         try:
@@ -72,19 +72,29 @@ def precision_split_if_needed(file_path: str) -> list:
             file_bytes = int(format_info["size"])
             bitrate_bps = int(format_info.get("bit_rate") or (file_bytes * 8) / max(duration, 1))
 
-            # Predict the ideal duration to get parts of ~1.98 GB
+            # Predict ideal duration for ~1.98 GB
             target_bits = TARGET_MAX_SIZE * 0.99 * 8
             ideal_duration_sec = max(MIN_SPLIT_SECONDS, target_bits / bitrate_bps)
-            duration_sec = int(ideal_duration_sec)
-            LOGGER.info(f"Bitrate-based ideal split duration is ~{duration_sec // 60} minutes.")
+
+            # Bidirectional search: try both shorter and longer durations
+            LOGGER.info(f"Bitrate-based ideal split duration is ~{int(ideal_duration_sec // 60)} minutes. Generating bidirectional search durations.")
+            for i in range(MAX_ATTEMPTS):
+                if i % 2 == 0:
+                    factor = 0.95 ** (i // 2 + 1)  # Shorter
+                else:
+                    factor = 1.05 ** ((i + 1) // 2)  # Longer
+                durations_to_try.append(int(ideal_duration_sec * factor))
+            durations_to_try = list(dict.fromkeys(durations_to_try)) # Remove duplicates
         except Exception as e:
-            LOGGER.error(f"Failed to calculate ideal duration from ffprobe data: {e}. Starting with default 60 min.")
+            LOGGER.error(f"Bitrate estimation failed: {e}. Using fallback durations.")
+            durations_to_try = [3600, 3300, 3000, 2700, 2400, 2100, 1800, 1500, 1200, 900]
     else:
-        LOGGER.warning("ffprobe failed. Starting with default 60 min split duration.")
+        LOGGER.warning("ffprobe failed. Using predefined fallback durations.")
+        durations_to_try = [3600, 3300, 3000, 2700, 2400, 2100, 1800, 1500, 1200, 900]
 
     # --- Retry Loop ---
     output_pattern = os.path.join(dir_name, f"{base_name} - Part %03d.mkv")
-    for attempt in range(1, MAX_ATTEMPTS + 1):
+    for attempt, duration_sec in enumerate(durations_to_try, 1):
         # Clean up parts from any previous failed attempt
         for old_part in glob.glob(output_pattern.replace("%03d", "*")):
             try:
@@ -92,7 +102,7 @@ def precision_split_if_needed(file_path: str) -> list:
             except OSError:
                 pass
 
-        LOGGER.info(f"🔁 Attempt {attempt}/{MAX_ATTEMPTS}: Splitting with segment time of {duration_sec}s (~{duration_sec//60} min).")
+        LOGGER.info(f"🔁 Attempt {attempt}/{len(durations_to_try)}: Splitting with segment time of {duration_sec}s (~{duration_sec//60} min).")
 
         command = [
             "ffmpeg", "-i", file_path,
@@ -108,13 +118,11 @@ def precision_split_if_needed(file_path: str) -> list:
             result = subprocess.run(command, capture_output=True, text=True, timeout=900)
             if result.returncode != 0:
                 LOGGER.warning(f"ffmpeg process failed on attempt {attempt}. Stderr: {result.stderr[:200]}...")
-                duration_sec = int(duration_sec * 0.90) # Reduce duration significantly on ffmpeg error
                 continue
 
             split_files = sorted(glob.glob(os.path.join(dir_name, f"{base_name} - Part *.mkv")))
             if not split_files or (len(split_files) == 1 and file_size > MAX_TELEGRAM_SIZE):
-                LOGGER.warning(f"Attempt {attempt} resulted in one or zero parts. The duration is likely too long.")
-                duration_sec = int(duration_sec * 0.85) # Decrease duration aggressively
+                LOGGER.warning(f"Attempt {attempt} resulted in one or zero parts. The duration may be too long.")
                 continue
 
             # --- Verification of Parts ---
@@ -128,21 +136,14 @@ def precision_split_if_needed(file_path: str) -> list:
                     LOGGER.info(f"   -> {os.path.basename(f)} ({gb_size:.2f} GB)")
                 return split_files
             else:
-                # --- Adaptive Duration Adjustment ---
                 if oversized_parts:
-                    LOGGER.warning(f"❌ Attempt {attempt} failed: {len(oversized_parts)} part(s) were >= 2000 MiB. Reducing duration.")
-                    duration_sec = int(duration_sec * 0.95) # Decrease duration by 5%
+                    LOGGER.warning(f"❌ Attempt {attempt} failed: {len(oversized_parts)} part(s) were >= 2000 MiB. Trying different duration.")
                 if small_early_parts:
-                    LOGGER.warning(f"❌ Attempt {attempt} failed: {len(small_early_parts)} early part(s) were < 1.95 GB. Increasing duration.")
-                    duration_sec = int(duration_sec * 1.05) # Increase duration by 5%
+                    LOGGER.warning(f"❌ Attempt {attempt} failed: {len(small_early_parts)} early part(s) were < 1.95 GB. Trying different duration.")
+                continue
 
-        except subprocess.TimeoutExpired:
-            LOGGER.error(f"ffmpeg command timed out on attempt {attempt}. Retrying with shorter duration.")
-            duration_sec = int(duration_sec * 0.90)
-            continue
         except Exception as e:
             LOGGER.error(f"An exception occurred during split attempt {attempt}: {e}")
-            duration_sec = int(duration_sec * 0.90)
             continue
 
     # --- Ultimate Fallback ---

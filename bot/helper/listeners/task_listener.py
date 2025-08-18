@@ -182,6 +182,12 @@ class TaskListener(TaskConfig):
             split_files = await sync_to_async(precision_split_if_needed, up_path)
 
             if len(split_files) > 1:
+                # Guard clause to ensure split files exist
+                if not await aiopath.exists(split_files[0]):
+                    LOGGER.error(f"Split failed: output file {split_files[0]} does not exist.")
+                    await self.on_upload_error("Split failed: could not find output files.")
+                    return
+
                 LOGGER.info(f"Splitting successful. Uploading {len(split_files)} parts.")
                 upload_dir = os.path.dirname(split_files[0])
                 tg_uploader = TelegramUploader(self, upload_dir)
@@ -189,7 +195,7 @@ class TaskListener(TaskConfig):
                 await tg_uploader._user_settings()
 
                 # ✅ Use sync os.path.getsize() — safe after download
-                total_gb = sum(os.path.getsize(f) for f in split_files) / (1024**3)
+                total_gb = sum(os.path.getsize(f) for f in split_files if os.path.exists(f)) / (1024**3)
 
                 # Get duration
                 duration_str = self.media_info.get("duration", "Unknown")
@@ -213,6 +219,11 @@ class TaskListener(TaskConfig):
                     pass
 
                 for i, file_path in enumerate(split_files, 1):
+                    # Guard clause for each file in the loop
+                    if not await aiopath.exists(file_path):
+                        LOGGER.error(f"Split file missing during upload loop: {file_path}")
+                        continue
+
                     # ✅ Critical: Update _up_path on the uploader instance directly
                     tg_uploader._up_path = file_path
                     file_name = os.path.basename(file_path)
