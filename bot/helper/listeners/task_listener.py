@@ -271,22 +271,22 @@ if len(split_files) > 1:
     await start_from_queued()
     return
 
-        if self.join:
-            await join_files(up_path)
+    if self.join:
+        await join_files(up_path)
 
-        if self.name_sub:
-            up_path = await self.substitute(up_path)
-            self.name = up_path.replace(f"{self.dir}/", "").split("/", 1)[0]
+    if self.name_sub:
+        up_path = await self.substitute(up_path)
+        self.name = up_path.replace(f"{self.dir}/", "").split("/", 1)[0]
 
-        if self.compress:
-            up_path = await self.proceed_compress(up_path, gid)
-            if self.is_cancelled: return
-            self.name = up_path.replace(f"{self.dir}/", "").split("/", 1)[0]
+    if self.compress:
+        up_path = await self.proceed_compress(up_path, gid)
+        if self.is_cancelled: return
+        self.name = up_path.replace(f"{self.dir}/", "").split("/", 1)[0]
 
-        if self.is_leech and not self.compress:
-            await self.proceed_split(up_path, gid)
-            if self.is_cancelled: return
-            self.clear()
+    if self.is_leech and not self.compress:
+        await self.proceed_split(up_path, gid)
+        if self.is_cancelled: return
+        self.clear()
 
         self.size = await get_path_size(up_path)
         if self.size == 0:
