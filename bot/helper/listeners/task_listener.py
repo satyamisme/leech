@@ -210,21 +210,34 @@ class TaskListener(TaskConfig):
                     if i == len(split_files) and size_gb < 0.1:
                         self._thumb = None
 
-                    caption = (
-                        f"🎬 {base_name}\n"
-                        f"📁 Part {i} of {len(split_files)} | 📂 Total: {total_gb:.2f} GB | ⏱️ {duration_str}\n"
-                        f"📊 1080p • h264 • 1A • TEL • Split\n"
-                        f"📡 Source: @ViewCinemas\n\n"
-                        f"📽️ `{os.path.basename(up_path)}`\n"
-                        f"📏 {size_gb:.2f} GB | 📅 {strftime('%d %b %Y')}\n\n"
-                        f"**Streams Kept:**\n"
-                        f"🎥 h264, High, 1080p, 24fps\n"
-                        f"🔊 aac TEL, stereo\n\n"
-                        f"**Streams Removed:**\n"
-                        f"🚫 aac HIN, stereo\n"
-                        f"🚫 aac ENG, stereo\n"
-                        f"🚫 subrip ENG (Default)\n"
-                    )
+                    # Build caption with dynamic stream info
+                    caption = f"🎬 {base_name}\n"
+                    caption += f"📁 Part {i} of {len(split_files)} | 📂 Total: {total_gb:.2f} GB | ⏱️ {duration_str}\n"
+
+                    # Add a dynamic summary line
+                    video_summary = next((s for s in self.streams_kept if s['codec_type'] == 'video'), None)
+                    audio_summary = next((s for s in self.streams_kept if s['codec_type'] == 'audio'), None)
+                    if video_summary:
+                        summary_line = f"📊 {video_summary.get('codec_name', '').upper()}, {video_summary.get('height', 'N/A')}p"
+                        if audio_summary:
+                            summary_line += f", {audio_summary.get('tags', {}).get('language', 'N/A').upper()}"
+                        summary_line += " • Split"
+                        caption += f"{summary_line}\n"
+
+                    caption += f"📡 Source: @ViewCinemas\n\n"
+                    caption += f"📽️ `{os.path.basename(up_path)}`\n"
+                    caption += f"📏 {size_gb:.2f} GB | 📅 {strftime('%d %b %Y')}\n"
+
+                    if self.streams_kept:
+                        caption += "\n**Streams Kept:**\n"
+                        for stream in self.streams_kept:
+                            icon = "🎥" if stream['codec_type'] == 'video' else "🔊" if stream['codec_type'] == 'audio' else "📜"
+                            caption += f"{icon} {self._format_stream_info(stream)}\n"
+
+                    if self.streams_removed:
+                        caption += "\n**Streams Removed:**\n"
+                        for stream in self.streams_removed:
+                            caption += f"🚫 {self._format_stream_info(stream)}\n"
 
                     if i == len(split_files):
                         caption += (
@@ -330,41 +343,38 @@ class TaskListener(TaskConfig):
                     await edit_message(self.status_message, text)
                     self.last_ffmpeg_progress_text = text
 
-    def _format_stream_info(self, stream, stream_type):
+    def _format_stream_info(self, stream):
         details = []
-        if stream_type == 'video':
-            details.append(f"<code>{stream.get('codec_name', 'N/A')}")
+        codec_type = stream.get('codec_type')
+        codec_name = stream.get('codec_name', 'N/A')
+        lang = stream.get('tags', {}).get('language', 'und').upper()
+
+        if codec_type == 'video':
+            details.append(codec_name)
             if 'profile' in stream:
-                details.append(f"{stream['profile']}")
-            details.append(f"{stream.get('height')}p")
-            if 'r_frame_rate' in stream:
-                fps = stream['r_frame_rate'].split('/')[0]
-                details.append(f"{fps}fps</code>")
-            return ', '.join(details)
+                details.append(stream['profile'])
+            if 'height' in stream:
+                details.append(f"{stream['height']}p")
+            if 'r_frame_rate' in stream and stream['r_frame_rate'] != '0/0':
+                try:
+                    num, den = map(int, stream['r_frame_rate'].split('/'))
+                    fps = round(num / den, 2)
+                    details.append(f"{fps}fps")
+                except:
+                    details.append(f"{stream['r_frame_rate']}fps")
+        elif codec_type == 'audio':
+            details.append(codec_name)
+            details.append(lang)
+            if 'channel_layout' in stream:
+                details.append(stream['channel_layout'])
+        elif codec_type == 'subtitle':
+            details.append(codec_name)
+            details.append(lang)
 
-        index = stream.get('index', 'N/A')
-        lang = stream.get('tags', {}).get('language', 'N/A').upper()
-        codec = stream.get('codec_name', 'N/A')
+        if stream.get('disposition', {}).get('default'):
+            details.append("(Default)")
 
-        if stream_type == 'audio':
-            layout = stream.get('channel_layout', 'N/A')
-
-            bitrate_str = stream.get('bit_rate')
-            if not bitrate_str:
-                bitrate_str = stream.get('tags', {}).get('BPS')
-            if not bitrate_str:
-                bitrate_str = stream.get('tags', {}).get('bitrate')
-
-            if bitrate_str and bitrate_str.isdigit():
-                bitrate = f"{int(bitrate_str) // 1000}kbps"
-            else:
-                bitrate = 'N/A'
-
-            return f"<code>{index}. {codec} {lang}, {layout}, {bitrate}</code>"
-
-        if stream_type == 'subtitle':
-            default = "Default" if stream.get('disposition', {}).get('default') else ""
-            return f"<code>{index}. {codec} {lang}, {default}</code>"
+        return ", ".join(details)
 
     async def _send_leech_completion_message(self, sent_message):
         # This new method only builds and sends the message for a single file.
