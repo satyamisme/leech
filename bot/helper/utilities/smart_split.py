@@ -1,126 +1,131 @@
 import os
 import subprocess
 import glob
-import json
+import shlex
 from bot import LOGGER
 
-# Constants
 MAX_TELEGRAM_SIZE = 2000 * 1024 * 1024
-TARGET_MIN_SIZE = 1.95 * 1024 * 1024 * 1024
+TARGET_MIN_SIZE = 1950 * 1024 * 1024
+TARGET_MAX_SIZE = 1999 * 1024 * 1024
 MAX_ATTEMPTS = 10
-SIZE_STEP_MB = 100
 
-def get_video_info(filepath):
-    """Uses ffprobe to get video metadata."""
-    command = ["ffprobe", "-v", "error", "-of", "json", "-show_entries", "format=duration,size,bit_rate", filepath]
-    try:
-        result = subprocess.run(command, capture_output=True, text=True, timeout=60)
-        return json.loads(result.stdout)
-    except Exception as e:
-        LOGGER.error(f"ffprobe failed: {e}")
-        return None
-
-def smart_split_if_needed(file_path: str) -> list:
+def smart_split(file_path: str, output_dir: str) -> list:
     """
-    Splits a file using an iterative mkvmerge approach to find the perfect size.
-    Falls back to ffmpeg if all mkvmerge attempts fail.
+    Splits a video file into parts that are between TARGET_MIN_SIZE and TARGET_MAX_SIZE.
+    Uses a binary search-like approach with mkvmerge to find the optimal split size.
     """
     file_size = os.path.getsize(file_path)
     if file_size <= MAX_TELEGRAM_SIZE:
-        LOGGER.info("File size is within the Telegram limit. No split needed.")
+        LOGGER.info(f"File '{os.path.basename(file_path)}' is {file_size/1024**2:.2f} MB, which is under the 2000MiB limit. No split needed.")
         return [file_path]
 
-    dir_name = os.path.dirname(file_path)
     base_name = os.path.splitext(os.path.basename(file_path))[0]
-    output_pattern = os.path.join(dir_name, f"{base_name} - Part %03d.mkv")
+    output_pattern = os.path.join(output_dir, f"{base_name} - Part %03d.mkv")
 
-    # --- mkvmerge Retry Logic ---
-    sizes_to_try = [1990 - (i * 10) for i in range(MAX_ATTEMPTS)]
+    # Clean up any previous split attempts for this file
+    for old_part in glob.glob(os.path.join(output_dir, f"{base_name} - Part *.mkv")):
+        try:
+            os.remove(old_part)
+            LOGGER.info(f"Removed old split part: {old_part}")
+        except OSError as e:
+            LOGGER.error(f"Error removing old part {old_part}: {e}")
 
-    for attempt, size_mb in enumerate(sizes_to_try, 1):
-        LOGGER.info(f"🔁 Attempt {attempt}/{MAX_ATTEMPTS}: Trying mkvmerge --split size:{size_mb}M")
+    low_mb = 1900  # Start binary search from a safe lower bound
+    high_mb = 2000 # Upper bound
+    best_split_files = None
 
-        for old in glob.glob(output_pattern.replace("%03d", "*")):
-            try: os.remove(old)
-            except: pass
+    LOGGER.info(f"Starting smart split for '{os.path.basename(file_path)}' ({file_size/1024**3:.2f} GB)")
 
-        cmd = ["mkvmerge", "-o", output_pattern, "--split", f"size:{size_mb}M", file_path]
+    for attempt in range(MAX_ATTEMPTS):
+        if low_mb > high_mb:
+            LOGGER.warning("Binary search bounds crossed. Using best found split or failing.")
+            break
+
+        current_size_mb = (low_mb + high_mb) // 2
+        LOGGER.info(f"🔁 Attempt {attempt + 1}/{MAX_ATTEMPTS}: Trying split size {current_size_mb}M...")
+
+        # Construct and run mkvmerge command
+        cmd = [
+            "mkvmerge",
+            "-o", output_pattern,
+            "--split", f"size:{current_size_mb}M",
+            file_path
+        ]
 
         try:
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
-            if result.returncode != 0:
-                LOGGER.warning(f"mkvmerge failed on attempt {attempt}: {result.stderr[:100]}...")
-                continue
-
-            split_files = sorted(glob.glob(os.path.join(dir_name, f"{base_name} - Part *.mkv")))
-            if len(split_files) < 2:
-                LOGGER.warning(f"mkvmerge created only one part on attempt {attempt}.")
-                continue
-
-            # Validate all parts except the last one
-            is_perfect = all(
-                TARGET_MIN_SIZE <= os.path.getsize(f) < MAX_TELEGRAM_SIZE
-                for f in split_files[:-1]
+            process = subprocess.run(
+                cmd,
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=900  # 15 minutes timeout
             )
+            LOGGER.info(f"mkvmerge command successful for size {current_size_mb}M.")
+            LOGGER.debug(f"mkvmerge stdout:\n{process.stdout}")
 
-            # Also ensure the last part is not oversized
-            if is_perfect and os.path.getsize(split_files[-1]) < MAX_TELEGRAM_SIZE:
-                LOGGER.info(f"✅ Perfect split found with size {size_mb}M! Created {len(split_files)} parts.")
-                return split_files
-            else:
-                LOGGER.warning(f"❌ Attempt {attempt} with size {size_mb}M resulted in parts of the wrong size.")
-                continue
-
-        except Exception as e:
-            LOGGER.error(f"mkvmerge execution failed on attempt {attempt}: {e}")
+        except subprocess.CalledProcessError as e:
+            LOGGER.error(f"mkvmerge failed with return code {e.returncode} for size {current_size_mb}M.")
+            LOGGER.error(f"mkvmerge stderr:\n{e.stderr}")
+            # If mkvmerge fails, it often means the size is too large or there's another issue.
+            # Let's assume it's too large and try a smaller size.
+            high_mb = current_size_mb - 1
+            continue
+        except subprocess.TimeoutExpired:
+            LOGGER.error(f"mkvmerge timed out for size {current_size_mb}M. This may indicate a problem with the file or system.")
+            # Assume it's too large to process quickly
+            high_mb = current_size_mb - 1
             continue
 
-    LOGGER.error("❌ All mkvmerge attempts failed. Falling back to ffmpeg...")
-    return binary_search_split_fallback(file_path, dir_name, base_name, file_size)
+        split_files = sorted(glob.glob(os.path.join(output_dir, f"{base_name} - Part *.mkv")))
 
-def binary_search_split_fallback(file_path, dir_name, base_name, file_size):
-    """Fallback splitting logic using ffmpeg and a binary search algorithm."""
-    LOGGER.info("🔁 Falling back to ffmpeg binary search split...")
-    output_pattern = os.path.join(dir_name, f"{base_name} - Part %03d.mkv")
-    low = 300
-    high = 5400
-    best_split = []
-
-    for attempt in range(1, 11):
-        if low > high:
-            break
-        duration_sec = (low + high) // 2
-        for old in glob.glob(output_pattern.replace("%03d", "*")):
-            try: os.remove(old)
-            except: pass
-
-        cmd = [
-            "ffmpeg", "-i", file_path, "-c", "copy", "-map", "0",
-            "-f", "segment", "-segment_time", str(duration_sec),
-            "-reset_timestamps", "1", "-avoid_negative_ts", "make_zero", "-y", output_pattern
-        ]
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=900)
-
-        if result.returncode != 0:
-            high = duration_sec - 1
+        if not split_files:
+            LOGGER.error(f"mkvmerge ran but created no split files for size {current_size_mb}M. This is unexpected.")
+            # This is a strange state, let's try a smaller size.
+            high_mb = current_size_mb - 1
             continue
 
-        split_files = sorted(glob.glob(output_pattern.replace("%03d", "*")))
-        if not split_files or (len(split_files) == 1 and file_size > MAX_TELEGRAM_SIZE):
-            high = duration_sec - 1
+        if len(split_files) == 1:
+            LOGGER.warning(f"Split attempt with {current_size_mb}M resulted in only one part. This means the split size is larger than the source file size. Adjusting upper bound.")
+            high_mb = current_size_mb - 1
             continue
 
-        oversized = [f for f in split_files if os.path.getsize(f) >= MAX_TELEGRAM_SIZE]
-        small_early = [f for f in split_files[:-1] if os.path.getsize(f) < TARGET_MIN_SIZE]
+        # Check the size of the first part to guide the binary search
+        first_part_size = os.path.getsize(split_files[0])
+        LOGGER.info(f"First part size is {first_part_size / 1024**2:.2f} MB.")
 
-        if not oversized and not small_early:
+        # Check if all parts (except the last) are within the target range
+        is_perfect = True
+        all_under_limit = True
+        for i, f in enumerate(split_files):
+            size = os.path.getsize(f)
+            if size > MAX_TELEGRAM_SIZE:
+                all_under_limit = False
+            # For all but the last part, check if it's in the ideal range
+            if i < len(split_files) - 1 and not (TARGET_MIN_SIZE <= size <= TARGET_MAX_SIZE):
+                is_perfect = False
+
+        if is_perfect:
+            LOGGER.info(f"✅ Perfect split found! Size {current_size_mb}M resulted in parts within the desired {TARGET_MIN_SIZE/1024**2:.0f}-{TARGET_MAX_SIZE/1024**2:.0f} MB range.")
             return split_files
+
+        if all_under_limit:
+             # This is a safe split, though not perfect. Store it as a fallback.
+            best_split_files = split_files
+            LOGGER.info(f"Found a safe (but not perfect) split with size {current_size_mb}M. Will continue searching for a better one.")
+
+        # Adjust binary search bounds based on the first part's size
+        if first_part_size > TARGET_MAX_SIZE:
+            # First part is too big, need to aim for a smaller size
+            high_mb = current_size_mb - 1
+            LOGGER.info("First part is too big. Decreasing high bound.")
         else:
-            if oversized: high = duration_sec - 1
-            else: low = duration_sec + 1
-            if not oversized: best_split = split_files
+            # First part is too small, need to aim for a larger size
+            low_mb = current_size_mb + 1
+            LOGGER.info("First part is too small. Increasing low bound.")
 
-    if best_split:
-        return best_split
+    if best_split_files:
+        LOGGER.warning(f"Could not find a perfect split after {MAX_ATTEMPTS} attempts. Using the best safe split found.")
+        return best_split_files
 
+    LOGGER.error("❌ All mkvmerge attempts failed to produce a valid or safe split. Returning original file.")
     return [file_path]

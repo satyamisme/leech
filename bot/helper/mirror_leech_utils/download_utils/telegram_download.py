@@ -80,7 +80,7 @@ class TelegramDownloadHelper:
         client = TgClient.user if self.session == "user" else self._listener.client
         try:
             async with aiofiles.open(path, "wb") as f:
-                async for chunk in client.stream_media(message, limit=1024*1024):
+                async for chunk in client.stream_media(message, chunk_size=1024*1024):
                     if self._listener.is_cancelled:
                         await self._on_download_error("Cancelled by user!")
                         return
