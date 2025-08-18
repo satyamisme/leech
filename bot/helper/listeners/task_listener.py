@@ -213,8 +213,8 @@ class TaskListener(TaskConfig):
                     pass
 
                 for i, file_path in enumerate(split_files, 1):
-                    # ✅ Critical: Update _up_path so uploader can read it
-                    self._up_path = file_path
+                    # ✅ Critical: Update _up_path on the uploader instance directly
+                    tg_uploader._up_path = file_path
                     file_name = os.path.basename(file_path)
                     size_gb = os.path.getsize(file_path) / (1024**3)
 

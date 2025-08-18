@@ -61,37 +61,31 @@ def precision_split_if_needed(file_path: str) -> list:
     base_name = os.path.splitext(os.path.basename(file_path))[0]
     LOGGER.info(f"✂️ File is too large. Starting precision split for: {file_path}")
 
-    # --- Duration Calculation Strategy ---
+    # --- Initial Duration Calculation ---
+    duration_sec = 3600  # Default to 60 minutes
     probe_data = get_video_info(file_path)
-    durations_to_try = []
 
     if probe_data and probe_data.get("format"):
         try:
             format_info = probe_data["format"]
             duration = float(format_info["duration"])
             file_bytes = int(format_info["size"])
-            # Estimate bitrate if not available, fallback to a safe default
             bitrate_bps = int(format_info.get("bit_rate") or (file_bytes * 8) / max(duration, 1))
 
             # Predict the ideal duration to get parts of ~1.98 GB
-            target_bits = TARGET_MAX_SIZE * 0.99 * 8  # Aim slightly under the max
+            target_bits = TARGET_MAX_SIZE * 0.99 * 8
             ideal_duration_sec = max(MIN_SPLIT_SECONDS, target_bits / bitrate_bps)
-
-            # Create a list of decreasing durations for each attempt
-            durations_to_try = [int(ideal_duration_sec * (0.96 ** i)) for i in range(MAX_ATTEMPTS)]
-            LOGGER.info(f"Bitrate-based ideal split duration is ~{int(ideal_duration_sec // 60)} minutes. Generating adaptive durations.")
+            duration_sec = int(ideal_duration_sec)
+            LOGGER.info(f"Bitrate-based ideal split duration is ~{duration_sec // 60} minutes.")
         except Exception as e:
-            LOGGER.error(f"Failed to calculate ideal duration from ffprobe data: {e}")
-            # Fallback to predefined durations if calculation fails
-            durations_to_try = [3600, 3300, 3000, 2700, 2400, 2100, 1800, 1500, 1200, 900]
+            LOGGER.error(f"Failed to calculate ideal duration from ffprobe data: {e}. Starting with default 60 min.")
     else:
-        LOGGER.warning("ffprobe failed or provided no format info. Using predefined fallback durations.")
-        durations_to_try = [3600, 3300, 3000, 2700, 2400, 2100, 1800, 1500, 1200, 900]
+        LOGGER.warning("ffprobe failed. Starting with default 60 min split duration.")
 
     # --- Retry Loop ---
     output_pattern = os.path.join(dir_name, f"{base_name} - Part %03d.mkv")
-    for attempt, duration_sec in enumerate(durations_to_try, 1):
-        # Clean up parts from any previous failed attempt in this loop
+    for attempt in range(1, MAX_ATTEMPTS + 1):
+        # Clean up parts from any previous failed attempt
         for old_part in glob.glob(output_pattern.replace("%03d", "*")):
             try:
                 os.remove(old_part)
@@ -111,15 +105,16 @@ def precision_split_if_needed(file_path: str) -> list:
         ]
 
         try:
-            # Run ffmpeg command
-            result = subprocess.run(command, capture_output=True, text=True)
+            result = subprocess.run(command, capture_output=True, text=True, timeout=900)
             if result.returncode != 0:
                 LOGGER.warning(f"ffmpeg process failed on attempt {attempt}. Stderr: {result.stderr[:200]}...")
+                duration_sec = int(duration_sec * 0.90) # Reduce duration significantly on ffmpeg error
                 continue
 
             split_files = sorted(glob.glob(os.path.join(dir_name, f"{base_name} - Part *.mkv")))
-            if not split_files or len(split_files) < 2:
+            if not split_files or (len(split_files) == 1 and file_size > MAX_TELEGRAM_SIZE):
                 LOGGER.warning(f"Attempt {attempt} resulted in one or zero parts. The duration is likely too long.")
+                duration_sec = int(duration_sec * 0.85) # Decrease duration aggressively
                 continue
 
             # --- Verification of Parts ---
@@ -133,14 +128,21 @@ def precision_split_if_needed(file_path: str) -> list:
                     LOGGER.info(f"   -> {os.path.basename(f)} ({gb_size:.2f} GB)")
                 return split_files
             else:
+                # --- Adaptive Duration Adjustment ---
                 if oversized_parts:
-                    LOGGER.warning(f"❌ Attempt {attempt} failed: {len(oversized_parts)} part(s) were >= 2000 MiB. Next attempt will use a shorter duration.")
+                    LOGGER.warning(f"❌ Attempt {attempt} failed: {len(oversized_parts)} part(s) were >= 2000 MiB. Reducing duration.")
+                    duration_sec = int(duration_sec * 0.95) # Decrease duration by 5%
                 if small_early_parts:
-                    LOGGER.warning(f"❌ Attempt {attempt} failed: {len(small_early_parts)} early part(s) were < 1.95 GB. Logic will adjust for next attempt.")
-                # The loop will continue with the next duration in the list
+                    LOGGER.warning(f"❌ Attempt {attempt} failed: {len(small_early_parts)} early part(s) were < 1.95 GB. Increasing duration.")
+                    duration_sec = int(duration_sec * 1.05) # Increase duration by 5%
 
+        except subprocess.TimeoutExpired:
+            LOGGER.error(f"ffmpeg command timed out on attempt {attempt}. Retrying with shorter duration.")
+            duration_sec = int(duration_sec * 0.90)
+            continue
         except Exception as e:
             LOGGER.error(f"An exception occurred during split attempt {attempt}: {e}")
+            duration_sec = int(duration_sec * 0.90)
             continue
 
     # --- Ultimate Fallback ---
