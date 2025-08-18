@@ -22,7 +22,7 @@ from ... import (
 from ...core.config_manager import Config
 from ...core.torrent_manager import TorrentManager
 from ..common import TaskConfig
-from ..ext_utils.bot_utils import sync_to_async, get_readable_time, SetInterval
+from ..ext_utils.bot_utils import sync_to_async, SetInterval
 from ..ext_utils.db_handler import database
 from ..ext_utils.files_utils import (
     get_path_size,
@@ -36,7 +36,7 @@ from ..ext_utils.files_utils import (
     get_mime_type,
 )
 from ..ext_utils.links_utils import is_gdrive_id
-from ..ext_utils.status_utils import get_readable_file_size
+from ..ext_utils.status_utils import get_readable_file_size, get_readable_time
 from ..ext_utils.task_manager import start_from_queued, check_running_tasks
 from ..mirror_leech_utils.gdrive_utils.upload import GoogleDriveUpload
 from ..mirror_leech_utils.rclone_utils.transfer import RcloneTransferHelper
@@ -278,7 +278,6 @@ class TaskListener(TaskConfig):
                         if sent_msg:
                             sent_messages.append(sent_msg)
                             last_msg = sent_msg
-                            await self._send_leech_completion_message(sent_msg)
                         if self.is_cancelled:
                             break
                     if self.is_cancelled:
@@ -287,7 +286,7 @@ class TaskListener(TaskConfig):
                 if len(sent_messages) > 1:
                     part_links = []
                     for i, msg in enumerate(sent_messages, 1):
-                        size_gb = sizes[i-1] / (1024**3)
+                        size_gb = os.path.getsize(split_files[i-1]) / (1024**3)
                         file_name = ospath.basename(split_files[i-1])
                         part_links.append(f"{i}. [{file_name}]({msg.link}) ({size_gb:.2f} GB)")
 
