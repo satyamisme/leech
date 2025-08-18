@@ -173,120 +173,120 @@ class TaskListener(TaskConfig):
                 up_path = processed_path
                 self.name = up_path.replace(f"{self.dir}/", "").split("/", 1)[0]
 
-# === [FIXED] Binary Search Split + Rich UI with Navigation ===
-from bot.helper.utilities.precision_split import binary_search_split_if_needed
-from bot.helper.ext_utils.media_utils import get_media_info
-import os
-from time import strftime
+            # === [FIXED] Binary Search Split + Rich UI with Navigation ===
+            from bot.helper.utilities.precision_split import binary_search_split_if_needed
+            from bot.helper.ext_utils.media_utils import get_media_info
+            import os
+            from time import strftime
 
-split_files = await sync_to_async(binary_search_split_if_needed, up_path)
+            split_files = await sync_to_async(binary_search_split_if_needed, up_path)
 
-if len(split_files) > 1:
-    LOGGER.info(f"Splitting successful. Uploading {len(split_files)} parts.")
-    upload_dir = ospath.dirname(split_files[0])
-    tg_uploader = TelegramUploader(self, upload_dir)
-    tg_uploader._sent_msg = self.status_message or self.message
-    await tg_uploader._user_settings()
+            if len(split_files) > 1:
+                LOGGER.info(f"Splitting successful. Uploading {len(split_files)} parts.")
+                upload_dir = ospath.dirname(split_files[0])
+                tg_uploader = TelegramUploader(self, upload_dir)
+                tg_uploader._sent_msg = self.status_message or self.message
+                await tg_uploader._user_settings()
 
-    # ✅ Use sync os.path.getsize() — safe after download
-    total_gb = sum(os.path.getsize(f) for f in split_files) / (1024**3)
+                # ✅ Use sync os.path.getsize() — safe after download
+                total_gb = sum(os.path.getsize(f) for f in split_files) / (1024**3)
 
-    # Get duration
-    duration_str = self.media_info.get("duration", "Unknown")
-    if duration_str == "Unknown" and 'format' in self.media_info and 'duration' in self.media_info['format']:
-        duration_str = get_readable_time(float(self.media_info['format']['duration']))
+                # Get duration
+                duration_str = self.media_info.get("duration", "Unknown")
+                if duration_str == "Unknown" and 'format' in self.media_info and 'duration' in self.media_info['format']:
+                    duration_str = get_readable_time(float(self.media_info['format']['duration']))
 
-    # Extract base name
-    base_name = ospath.splitext(self.name)[0].replace(" - Part 001", "")
+                # Extract base name
+                base_name = ospath.splitext(self.name)[0].replace(" - Part 001", "")
 
-    # Skip thumbnail if MJPEG present
-    try:
-        media_info = await sync_to_async(get_media_info, split_files[0])
-        if media_info:
-            has_mjpeg = any(
-                s.get('codec_name') == 'mjpeg' and s.get('codec_type') == 'video'
-                for s in media_info.get('streams', [])
-            )
-            if has_mjpeg:
-                self._thumb = None
-    except:
-        pass
+                # Skip thumbnail if MJPEG present
+                try:
+                    media_info = await sync_to_async(get_media_info, split_files[0])
+                    if media_info:
+                        has_mjpeg = any(
+                            s.get('codec_name') == 'mjpeg' and s.get('codec_type') == 'video'
+                            for s in media_info.get('streams', [])
+                        )
+                        if has_mjpeg:
+                            self._thumb = None
+                except:
+                    pass
 
-    for i, file_path in enumerate(split_files, 1):
-        # ✅ Critical: Update _up_path so uploader can read it. Let's trust the user's reference.
-        self._up_path = file_path
-        file_name = ospath.basename(file_path)
-        size_gb = os.path.getsize(file_path) / (1024**3)
+                for i, file_path in enumerate(split_files, 1):
+                    # ✅ Critical: Update _up_path so uploader can read it. Let's trust the user's reference.
+                    self._up_path = file_path
+                    file_name = ospath.basename(file_path)
+                    size_gb = os.path.getsize(file_path) / (1024**3)
 
-        # Skip thumbnail for tiny files (like last part) to avoid errors
-        if i == len(split_files) and size_gb < 0.1:
-            self._thumb = None
+                    # Skip thumbnail for tiny files (like last part) to avoid errors
+                    if i == len(split_files) and size_gb < 0.1:
+                        self._thumb = None
 
-        # Build caption with navigation
-        caption = (
-            f"🎬 {base_name}\n"
-            f"📁 Part {i} of {len(split_files)} | 📂 Total: {total_gb:.2f} GB | ⏱️ {duration_str}\n"
-            f"📊 1080p • h264 • 1A • TEL • Split\n"
-            f"📡 Source: @ViewCinemas\n\n"
-            f"📽️ `{os.path.basename(up_path)}`\n"
-            f"📏 {size_gb:.2f} GB | 📅 {strftime('%d %b %Y')}\n\n"
-            f"**Streams Kept:**\n"
-            f"🎥 h264, High, 1080p, 24fps\n"
-            f"🔊 aac TEL, stereo\n\n"
-            f"**Streams Removed:**\n"
-            f"🚫 aac HIN, stereo\n"
-            f"🚫 aac ENG, stereo\n"
-            f"🚫 subrip ENG (Default)\n"
-        )
+                    # Build caption with navigation
+                    caption = (
+                        f"🎬 {base_name}\n"
+                        f"📁 Part {i} of {len(split_files)} | 📂 Total: {total_gb:.2f} GB | ⏱️ {duration_str}\n"
+                        f"📊 1080p • h264 • 1A • TEL • Split\n"
+                        f"📡 Source: @ViewCinemas\n\n"
+                        f"📽️ `{os.path.basename(up_path)}`\n"
+                        f"📏 {size_gb:.2f} GB | 📅 {strftime('%d %b %Y')}\n\n"
+                        f"**Streams Kept:**\n"
+                        f"🎥 h264, High, 1080p, 24fps\n"
+                        f"🔊 aac TEL, stereo\n\n"
+                        f"**Streams Removed:**\n"
+                        f"🚫 aac HIN, stereo\n"
+                        f"🚫 aac ENG, stereo\n"
+                        f"🚫 subrip ENG (Default)\n"
+                    )
 
-        # Add navigation
-        if i > 1:
-            prev_name = f"{base_name} - Part {i-1:03d}.mkv"
-            caption += f"\n⬅️ Prev Part: {prev_name}"
-        if i < len(split_files):
-            next_name = f"{base_name} - Part {i+1:03d}.mkv"
-            caption += f"\n➡️ Next Part: {next_name}"
+                    # Add navigation
+                    if i > 1:
+                        prev_name = f"{base_name} - Part {i-1:03d}.mkv"
+                        caption += f"\n⬅️ Prev Part: {prev_name}"
+                    if i < len(split_files):
+                        next_name = f"{base_name} - Part {i+1:03d}.mkv"
+                        caption += f"\n➡️ Next Part: {next_name}"
 
-        # Final message
-        if i == len(split_files):
-            caption += (
-                f"\n\n✅ Upload Complete (Part {i}/{len(split_files)})\n"
-                f"✨ All parts uploaded successfully!\n"
-                f"🔗 Files are now available in your chat.\n"
-                f"⚡️ @genambot"
-            )
+                    # Final message
+                    if i == len(split_files):
+                        caption += (
+                            f"\n\n✅ Upload Complete (Part {i}/{len(split_files)})\n"
+                            f"✨ All parts uploaded successfully!\n"
+                            f"🔗 Files are now available in your chat.\n"
+                            f"⚡️ @genambot"
+                        )
 
-        await tg_uploader._upload_file(caption, file_name, file_path)
-        if self.is_cancelled:
-            return
+                    await tg_uploader._upload_file(caption, file_name, file_path)
+                    if self.is_cancelled:
+                        return
 
-    # Final cleanup
-    await clean_download(self.dir)
-    async with task_dict_lock:
-        if self.mid in task_dict:
-            del task_dict[self.mid]
-    async with queue_dict_lock:
-        if self.mid in non_queued_up:
-            non_queued_up.remove(self.mid)
-    await start_from_queued()
-    return
+                # Final cleanup
+                await clean_download(self.dir)
+                async with task_dict_lock:
+                    if self.mid in task_dict:
+                        del task_dict[self.mid]
+                async with queue_dict_lock:
+                    if self.mid in non_queued_up:
+                        non_queued_up.remove(self.mid)
+                await start_from_queued()
+                return
 
-    if self.join:
-        await join_files(up_path)
+        if self.join:
+            await join_files(up_path)
 
-    if self.name_sub:
-        up_path = await self.substitute(up_path)
-        self.name = up_path.replace(f"{self.dir}/", "").split("/", 1)[0]
+        if self.name_sub:
+            up_path = await self.substitute(up_path)
+            self.name = up_path.replace(f"{self.dir}/", "").split("/", 1)[0]
 
-    if self.compress:
-        up_path = await self.proceed_compress(up_path, gid)
-        if self.is_cancelled: return
-        self.name = up_path.replace(f"{self.dir}/", "").split("/", 1)[0]
+        if self.compress:
+            up_path = await self.proceed_compress(up_path, gid)
+            if self.is_cancelled: return
+            self.name = up_path.replace(f"{self.dir}/", "").split("/", 1)[0]
 
-    if self.is_leech and not self.compress:
-        await self.proceed_split(up_path, gid)
-        if self.is_cancelled: return
-        self.clear()
+        if self.is_leech and not self.compress:
+            await self.proceed_split(up_path, gid)
+            if self.is_cancelled: return
+            self.clear()
 
         self.size = await get_path_size(up_path)
         if self.size == 0:
