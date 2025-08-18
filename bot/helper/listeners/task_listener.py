@@ -67,6 +67,7 @@ class TaskListener(TaskConfig):
         self.status_message = None
         self.start_time = time()
         self.last_ffmpeg_progress_text = None
+        self.kept_indices = set()
 
     async def on_task_created(self):
         self.status_message = await send_message(self.message, "🎬 Analyzing Streams... ⏳")
@@ -107,7 +108,6 @@ class TaskListener(TaskConfig):
             await database.add_incomplete_task(
                 self.message.chat.id, self.message.link, self.tag
             )
-
 
     async def on_download_complete(self):
         await sleep(2)
@@ -166,13 +166,11 @@ class TaskListener(TaskConfig):
         from time import strftime
 
         mime_type = await sync_to_async(get_mime_type, up_path)
-        is_video_file = mime_type.startswith("video/")
-
-        if is_video_file:
+        if mime_type.startswith("video/"):
             if self.status_message:
                 await edit_message(self.status_message, f"🎬 **Processing Video:** `{self.name}`\n\n⏳ This may take a while...")
 
-            processed_path, self.media_info, _ = await process_video(up_path, self)
+            processed_path, self.media_info, self.kept_indices = await process_video(up_path, self)
 
             if self.is_cancelled: return
             if processed_path:
@@ -214,34 +212,57 @@ class TaskListener(TaskConfig):
                     caption = f"🎬 {base_name}\n"
                     caption += f"📁 Part {i} of {len(split_files)} | 📂 Total: {total_gb:.2f} GB | ⏱️ {duration_str}\n"
 
-                    # Add a dynamic summary line
-                    video_summary = next((s for s in self.streams_kept if s['codec_type'] == 'video'), None)
-                    audio_summary = next((s for s in self.streams_kept if s['codec_type'] == 'audio'), None)
-                    if video_summary:
-                        summary_line = f"📊 {video_summary.get('codec_name', '').upper()}, {video_summary.get('height', 'N/A')}p"
-                        if audio_summary:
-                            summary_line += f", {audio_summary.get('tags', {}).get('language', 'N/A').upper()}"
-                        summary_line += " • Split"
-                        caption += f"{summary_line}\n"
+                    if self.media_info:
+                        video_streams = [s for s in self.media_info.get('streams', []) if s['codec_type'] == 'video' and s.get('disposition', {}).get('attached_pic') == 0]
+                        audio_streams = [s for s in self.media_info.get('streams', []) if s['codec_type'] == 'audio']
+                        subtitle_streams = [s for s in self.media_info.get('streams', []) if s['codec_type'] == 'subtitle']
+
+                        kept_video = next((s for s in video_streams if s['index'] in self.kept_indices), None)
+                        kept_audio = [s for s in audio_streams if s['index'] in self.kept_indices]
+                        removed_audio = [s for s in audio_streams if s['index'] not in self.kept_indices]
+                        removed_subtitle = [s for s in subtitle_streams if s['index'] not in self.kept_indices]
+
+                        res = "Unknown"
+                        if kept_video:
+                            w = kept_video.get('width', 0)
+                            res = "1080p" if w >= 1920 else "720p" if w >= 1280 else "SD"
+                            vcodec = kept_video.get('codec_name', 'N/A').upper()
+                        else:
+                            vcodec = "N/A"
+
+                        langs = ','.join(list(dict.fromkeys([a.get('tags', {}).get('language', 'und').upper() for a in kept_audio])))
+                        header = f"{vcodec}, {res}, {langs}" if langs else f"{vcodec}, {res}"
+
+                        caption += f"📊 {header} • Split\n"
 
                     caption += f"📡 Source: @ViewCinemas\n\n"
                     caption += f"📽️ `{os.path.basename(up_path)}`\n"
                     caption += f"📏 {size_gb:.2f} GB | 📅 {strftime('%d %b %Y')}\n"
 
-                    if self.streams_kept:
+                    if self.media_info and (kept_video or kept_audio):
                         caption += "\n**Streams Kept:**\n"
-                        for stream in self.streams_kept:
-                            icon = "🎥" if stream['codec_type'] == 'video' else "🔊" if stream['codec_type'] == 'audio' else "📜"
-                            caption += f"{icon} {self._format_stream_info(stream)}\n"
+                        if kept_video:
+                            caption += f"🎥 {self._format_stream_info(kept_video)}\n"
+                        for a in kept_audio:
+                            caption += f"🔊 {self._format_stream_info(a)}\n"
 
-                    if self.streams_removed:
+                    if self.media_info and (removed_audio or removed_subtitle):
                         caption += "\n**Streams Removed:**\n"
-                        for stream in self.streams_removed:
-                            caption += f"🚫 {self._format_stream_info(stream)}\n"
+                        for a in removed_audio:
+                            caption += f"🚫 {self._format_stream_info(a)}\n"
+                        for s in removed_subtitle:
+                            caption += f"🚫 {self._format_stream_info(s)}\n"
+
+                    if i > 1:
+                        prev_name = f"{base_name} - Part {i-1:03d}.mkv"
+                        caption += f"\n⬅️ Prev Part: {prev_name}"
+                    if i < len(split_files):
+                        next_name = f"{base_name} - Part {i+1:03d}.mkv"
+                        caption += f"\n➡️ Next Part: {next_name}"
 
                     if i == len(split_files):
                         caption += (
-                            f"\n✅ Upload Complete (Part {i}/{len(split_files)})\n"
+                            f"\n\n✅ Upload Complete (Part {i}/{len(split_files)})\n"
                             f"✨ All parts uploaded successfully!\n"
                             f"🔗 Files are now available in your chat.\n"
                             f"⚡️ @genambot"
@@ -303,7 +324,6 @@ class TaskListener(TaskConfig):
             if self.is_cancelled:
                 return
 
-            # Final cleanup for leech tasks
             await clean_download(self.dir)
             async with task_dict_lock:
                 if self.mid in task_dict:
@@ -330,18 +350,6 @@ class TaskListener(TaskConfig):
             async with task_dict_lock:
                 task_dict[self.mid] = RcloneStatus(self, RCTransfer, gid, "up")
             await RCTransfer.upload(up_path)
-
-    async def _update_ffmpeg_progress(self):
-        if self.status_message is None:
-            return
-        async with task_dict_lock:
-            if self.mid in task_dict:
-                task = task_dict[self.mid]
-                progress = task.progress()
-                text = f"🎬 **Processing Video:** `{self.name}` 🔄\n{get_progress_bar_string(progress)} {progress}"
-                if text != self.last_ffmpeg_progress_text:
-                    await edit_message(self.status_message, text)
-                    self.last_ffmpeg_progress_text = text
 
     def _format_stream_info(self, stream):
         details = []
@@ -376,6 +384,18 @@ class TaskListener(TaskConfig):
 
         return ", ".join(details)
 
+    async def _update_ffmpeg_progress(self):
+        if self.status_message is None:
+            return
+        async with task_dict_lock:
+            if self.mid in task_dict:
+                task = task_dict[self.mid]
+                progress = task.progress()
+                text = f"🎬 **Processing Video:** `{self.name}` 🔄\n{get_progress_bar_string(progress)} {progress}"
+                if text != self.last_ffmpeg_progress_text:
+                    await edit_message(self.status_message, text)
+                    self.last_ffmpeg_progress_text = text
+
     async def _send_leech_completion_message(self, sent_message):
         # This new method only builds and sends the message for a single file.
         name = ospath.basename(sent_message.document.file_name if sent_message.document else sent_message.video.file_name)
@@ -386,15 +406,15 @@ class TaskListener(TaskConfig):
 
         if self.media_info:
             # Streams Kept
-            msg += "\n\n**Streams Kept:**"
+            msg += "\n\n**Streams Kept:**\n"
             video_streams_kept = [s for s in self.streams_kept if s['codec_type'] == 'video' and s.get('disposition', {}).get('attached_pic') == 0]
             audio_streams_kept = [s for s in self.streams_kept if s['codec_type'] == 'audio']
 
             if video_streams_kept:
-                vid_info = self._format_stream_info(video_streams_kept[0], 'video')
+                vid_info = self._format_stream_info(video_streams_kept[0])
                 msg += f"\n🎥 {vid_info}"
             for stream in audio_streams_kept:
-                msg += f"\n🔊 {self._format_stream_info(stream, 'audio')}"
+                msg += f"\n🔊 {self._format_stream_info(stream)}"
 
             # Streams Removed
             if self.streams_removed:
@@ -402,9 +422,9 @@ class TaskListener(TaskConfig):
                 audio_removed = [s for s in self.streams_removed if s['codec_type'] == 'audio']
                 subs_removed = [s for s in self.streams_removed if s['codec_type'] == 'subtitle']
                 for stream in audio_removed:
-                    msg += f"\n🚫 {self._format_stream_info(stream, 'audio')}"
+                    msg += f"\n🚫 {self._format_stream_info(stream)}"
                 for stream in subs_removed:
-                    msg += f"\n🚫 {self._format_stream_info(stream, 'subtitle')}"
+                    msg += f"\n🚫 {self._format_stream_info(stream)}"
 
             # Album Art
             album_art = next((s for s in self.media_info['streams'] if s.get('disposition', {}).get('attached_pic') == 1), None)

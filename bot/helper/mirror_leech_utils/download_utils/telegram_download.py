@@ -73,25 +73,24 @@ class TelegramDownloadHelper:
         await self._listener.on_download_complete()
 
     async def _download(self, message, path):
+        import aiofiles
+        import os
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        self._start_time = time()
+        client = TgClient.user if self.session == "user" else self._listener.client
         try:
-            download = await message.download(
-                file_name=path, progress=self._on_download_progress
-            )
-            if self._listener.is_cancelled:
-                return
-        except (FloodWait, FloodPremiumWait) as f:
-            LOGGER.warning(str(f))
-            await sleep(f.value)
-            await self._download(message, path)
-            return
+            async with aiofiles.open(path, "wb") as f:
+                async for chunk in client.stream_media(message, limit=1024*1024):
+                    if self._listener.is_cancelled:
+                        await self._on_download_error("Cancelled by user!")
+                        return
+                    await f.write(chunk)
+                    self._processed_bytes += len(chunk)
         except Exception as e:
             LOGGER.error(str(e))
             await self._on_download_error(str(e))
             return
-        if download is not None:
-            await self._on_download_complete()
-        elif not self._listener.is_cancelled:
-            await self._on_download_error("Internal error occurred")
+        await self._on_download_complete()
 
     async def add_download(self, message, path, session):
         self.session = session
