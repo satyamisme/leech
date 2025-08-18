@@ -160,12 +160,18 @@ class TaskListener(TaskConfig):
             if self.is_cancelled: return
             self.name = up_path.replace(f"{self.dir}/", "").split("/", 1)[0]
 
-        if await is_video(up_path):
+        from bot.helper.utilities.smart_split import smart_split_if_needed
+        from bot.helper.ext_utils.files_utils import get_mime_type
+        import os
+        from time import strftime
+
+        mime_type = await sync_to_async(get_mime_type, up_path)
+        is_video_file = mime_type.startswith("video/")
+
+        if is_video_file:
             if self.status_message:
                 await edit_message(self.status_message, f"🎬 **Processing Video:** `{self.name}`\n\n⏳ This may take a while...")
 
-            # We don't use SetInterval here anymore to avoid UI freezes.
-            # A static message is shown during processing.
             processed_path, self.media_info, _ = await process_video(up_path, self)
 
             if self.is_cancelled: return
@@ -173,10 +179,7 @@ class TaskListener(TaskConfig):
                 up_path = processed_path
                 self.name = up_path.replace(f"{self.dir}/", "").split("/", 1)[0]
 
-            from bot.helper.utilities.smart_split import smart_split_if_needed
-            import os
-            from time import strftime
-
+        if self.is_leech:
             if self.status_message:
                 await edit_message(self.status_message, f"🔪 **Splitting file:** `{self.name}`")
             split_files = await sync_to_async(smart_split_if_needed, up_path)
@@ -192,9 +195,9 @@ class TaskListener(TaskConfig):
                 await tg_uploader._user_settings()
 
                 total_gb = sum(os.path.getsize(f) for f in split_files) / (1024**3)
-                duration_str = self.media_info.get("duration", "Unknown")
-                if duration_str == "Unknown" and 'format' in self.media_info and 'duration' in self.media_info['format']:
-                    duration_str = get_readable_time(float(self.media_info['format']['duration']))
+                duration_str = "N/A"
+                if self.media_info and 'format' in self.media_info:
+                    duration_str = get_readable_time(float(self.media_info['format'].get('duration', 0)))
 
                 base_name = ospath.splitext(self.name)[0].replace(" - Part 001", "")
                 last_msg = None
@@ -237,8 +240,8 @@ class TaskListener(TaskConfig):
                     if self.is_cancelled:
                         return
 
-                await delete_message(self.status_message)
-                # Final cleanup for split tasks is handled after this return
+                if self.status_message:
+                    await delete_message(self.status_message)
                 return
 
         if self.join:
@@ -252,12 +255,6 @@ class TaskListener(TaskConfig):
             up_path = await self.proceed_compress(up_path, gid)
             if self.is_cancelled: return
             self.name = up_path.replace(f"{self.dir}/", "").split("/", 1)[0]
-
-        if self.is_leech and not self.compress:
-            # This is the old split logic for non-video files, leave as is.
-            await self.proceed_split(up_path, gid)
-            if self.is_cancelled: return
-            self.clear()
 
         self.size = await get_path_size(up_path)
         if self.size == 0:
