@@ -56,7 +56,6 @@ from ..telegram_helper.message_utils import (
 )
 from ..ext_utils.status_utils import get_progress_bar_string
 from bot.helper.utilities.smart_split import smart_split
-from ..ext_utils.media_utils import get_video_streams, get_audio_streams
 
 class TaskListener(TaskConfig):
     def __init__(self):
@@ -286,13 +285,13 @@ class TaskListener(TaskConfig):
 
         vcodec, resolution, audio_langs_str = "N/A", "N/A", "N/A"
         if self.media_info:
-            video_streams = get_video_streams(self.media_info)
+            video_streams = [s for s in self.media_info.get('streams', []) if s.get('codec_type') == 'video']
             if video_streams:
                 vstream = video_streams[0]
                 vcodec = vstream.get('codec_name', 'N/A')
                 resolution = f"{vstream.get('width', 'N/A')}x{vstream.get('height', 'N/A')}"
 
-            audio_streams = get_audio_streams(self.media_info)
+            audio_streams = [s for s in self.media_info.get('streams', []) if s.get('codec_type') == 'audio']
             if audio_streams:
                  audio_langs = {s.get('tags', {}).get('language', 'und') for s in audio_streams}
                  audio_langs_str = ', '.join(lang.upper() for lang in audio_langs) if audio_langs else "N/A"
