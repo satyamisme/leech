@@ -5,13 +5,6 @@ TELEGRAM_API = 0
 TELEGRAM_HASH = ""
 # OPTIONAL CONFIG
 TG_PROXY = {}
-# Telegram Parallel Downloader
-# Number of parallel chunks for Telegram downloads.
-MAX_PARALLEL_CHUNKS = 10
-# Chunk size in MB for Telegram downloads.
-CHUNK_SIZE = 10
-# Minimum size in bytes for a file to be downloaded using the parallel method.
-TG_PARALLEL_MIN_SIZE = 500 * 1024 * 1024
 USER_SESSION_STRING = ""
 CMD_SUFFIX = ""
 AUTHORIZED_CHATS = ""
