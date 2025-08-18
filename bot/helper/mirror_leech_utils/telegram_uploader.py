@@ -43,6 +43,7 @@ LOGGER = getLogger(__name__)
 
 class TelegramUploader:
     def __init__(self, listener, path):
+        self._reply_to = None
         self._last_uploaded = 0
         self._processed_bytes = 0
         self._listener = listener
@@ -351,6 +352,11 @@ class TelegramUploader:
                     return
                 if thumb == "none":
                     thumb = None
+
+                kwargs = {}
+                if self._reply_to:
+                    kwargs['reply_to_message_id'] = self._reply_to
+
                 self._sent_msg = await self._sent_msg.reply_document(
                     document=self._up_path,
                     quote=True,
@@ -359,6 +365,7 @@ class TelegramUploader:
                     force_document=True,
                     disable_notification=True,
                     progress=self._upload_progress,
+                    **kwargs,
                 )
             elif is_video:
                 key = "videos"
@@ -381,6 +388,11 @@ class TelegramUploader:
                     return
                 if thumb == "none":
                     thumb = None
+
+                kwargs = {}
+                if self._reply_to:
+                    kwargs['reply_to_message_id'] = self._reply_to
+
                 self._sent_msg = await self._sent_msg.reply_video(
                     video=self._up_path,
                     quote=True,
@@ -392,6 +404,7 @@ class TelegramUploader:
                     supports_streaming=True,
                     disable_notification=True,
                     progress=self._upload_progress,
+                    **kwargs,
                 )
             elif is_audio:
                 key = "audios"
@@ -400,6 +413,11 @@ class TelegramUploader:
                     return
                 if thumb == "none":
                     thumb = None
+
+                kwargs = {}
+                if self._reply_to:
+                    kwargs['reply_to_message_id'] = self._reply_to
+
                 self._sent_msg = await self._sent_msg.reply_audio(
                     audio=self._up_path,
                     quote=True,
@@ -410,17 +428,24 @@ class TelegramUploader:
                     thumb=thumb,
                     disable_notification=True,
                     progress=self._upload_progress,
+                    **kwargs,
                 )
             else:
                 key = "photos"
                 if self._listener.is_cancelled:
                     return
+
+                kwargs = {}
+                if self._reply_to:
+                    kwargs['reply_to_message_id'] = self._reply_to
+
                 self._sent_msg = await self._sent_msg.reply_photo(
                     photo=self._up_path,
                     quote=True,
                     caption=cap_mono,
                     disable_notification=True,
                     progress=self._upload_progress,
+                    **kwargs,
                 )
 
             if (

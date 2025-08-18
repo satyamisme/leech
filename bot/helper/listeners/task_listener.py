@@ -162,26 +162,29 @@ class TaskListener(TaskConfig):
 
         if await is_video(up_path):
             if self.status_message:
-                await edit_message(self.status_message, f"🎬 **Processing Video:** `{self.name}` 🔄")
+                await edit_message(self.status_message, f"🎬 **Processing Video:** `{self.name}`\n\n⏳ This may take a while...")
 
-            interval = SetInterval(3, self._update_ffmpeg_progress)
+            # We don't use SetInterval here anymore to avoid UI freezes.
+            # A static message is shown during processing.
             processed_path, self.media_info, _ = await process_video(up_path, self)
-            interval.cancel()
 
             if self.is_cancelled: return
             if processed_path:
                 up_path = processed_path
                 self.name = up_path.replace(f"{self.dir}/", "").split("/", 1)[0]
 
-            # === [FIXED] Smart Split (mkvmerge) + Rich UI with Navigation ===
             from bot.helper.utilities.smart_split import smart_split_if_needed
-            from bot.helper.ext_utils.media_utils import get_media_info
             import os
             from time import strftime
 
+            if self.status_message:
+                await edit_message(self.status_message, f"🔪 **Splitting file:** `{self.name}`")
             split_files = await sync_to_async(smart_split_if_needed, up_path)
 
             if len(split_files) > 1:
+                if self.status_message:
+                    await edit_message(self.status_message, f"📤 **Uploading {len(split_files)} parts:** `{self.name}`")
+
                 LOGGER.info(f"Splitting successful. Uploading {len(split_files)} parts.")
                 upload_dir = ospath.dirname(split_files[0])
                 tg_uploader = TelegramUploader(self, upload_dir)
@@ -194,9 +197,9 @@ class TaskListener(TaskConfig):
                     duration_str = get_readable_time(float(self.media_info['format']['duration']))
 
                 base_name = ospath.splitext(self.name)[0].replace(" - Part 001", "")
+                last_msg = None
 
                 for i, file_path in enumerate(split_files, 1):
-                    # Set uploader path correctly to prevent FileNotFoundError
                     tg_uploader._up_path = file_path
                     file_name = ospath.basename(file_path)
                     size_gb = os.path.getsize(file_path) / (1024**3)
@@ -220,34 +223,22 @@ class TaskListener(TaskConfig):
                         f"🚫 subrip ENG (Default)\n"
                     )
 
-                    if i > 1:
-                        prev_name = f"{base_name} - Part {i-1:03d}.mkv"
-                        caption += f"\n⬅️ Prev Part: {prev_name}"
-                    if i < len(split_files):
-                        next_name = f"{base_name} - Part {i+1:03d}.mkv"
-                        caption += f"\n➡️ Next Part: {next_name}"
-
                     if i == len(split_files):
                         caption += (
-                            f"\n\n✅ Upload Complete (Part {i}/{len(split_files)})\n"
+                            f"\n✅ Upload Complete (Part {i}/{len(split_files)})\n"
                             f"✨ All parts uploaded successfully!\n"
                             f"🔗 Files are now available in your chat.\n"
                             f"⚡️ @genambot"
                         )
 
-                    await tg_uploader._upload_file(caption, file_name, file_path)
+                    tg_uploader._reply_to = last_msg.id if last_msg else None
+                    last_msg = await tg_uploader._upload_file(caption, file_name, file_path)
+
                     if self.is_cancelled:
                         return
 
-                # Final cleanup
-                await clean_download(self.dir)
-                async with task_dict_lock:
-                    if self.mid in task_dict:
-                        del task_dict[self.mid]
-                async with queue_dict_lock:
-                    if self.mid in non_queued_up:
-                        non_queued_up.remove(self.mid)
-                await start_from_queued()
+                await delete_message(self.status_message)
+                # Final cleanup for split tasks is handled after this return
                 return
 
         if self.join:
@@ -263,6 +254,7 @@ class TaskListener(TaskConfig):
             self.name = up_path.replace(f"{self.dir}/", "").split("/", 1)[0]
 
         if self.is_leech and not self.compress:
+            # This is the old split logic for non-video files, leave as is.
             await self.proceed_split(up_path, gid)
             if self.is_cancelled: return
             self.clear()
