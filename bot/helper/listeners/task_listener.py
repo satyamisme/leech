@@ -222,6 +222,9 @@ class TaskListener(TaskConfig):
             if self.is_cancelled:
                 return
 
+    if self.status_message:
+        await delete_message(self.status_message)
+
             # Final cleanup for leech tasks
             await clean_download(self.dir)
             async with task_dict_lock:
