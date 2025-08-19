@@ -68,6 +68,7 @@ class TaskListener(TaskConfig):
         self.start_time = time()
         self.last_progress_text = None
         self.uploaded_files = {}
+        self.all_media_info = {}
 
     async def on_task_created(self):
         self.status_message = await send_message(self.message, "🎬 Analyzing Streams... ⏳")
@@ -167,7 +168,13 @@ class TaskListener(TaskConfig):
                     if not await is_video(file_path):
                         continue
 
+                    # Reset state for each file
                     self.name = ospath.basename(file_path)
+                    self.original_name = self.name
+                    self.media_info = None
+                    self.streams_kept = None
+                    self.streams_removed = None
+
                     if self.status_message:
                         await edit_message(self.status_message, f"🎬 **Processing Video:** `{self.name}` 🔄")
 
@@ -178,7 +185,7 @@ class TaskListener(TaskConfig):
                         return
 
                     if result and isinstance(result, tuple) and result[0] is not None:
-                        self.media_info = result[1]
+                        self.all_media_info[self.name] = result[1]
                     elif result is None or (isinstance(result, tuple) and result[0] is None):
                         LOGGER.error(f"Video processing failed for {file_path}. Aborting entire task.")
                         await self.on_upload_error(f"Video processing failed for {self.name}.")
@@ -196,6 +203,7 @@ class TaskListener(TaskConfig):
             if isinstance(result, tuple):
                 if result[0] is not None:
                     processed_path, self.media_info = result
+                    self.all_media_info[self.name] = self.media_info
                     up_path = processed_path
                     self.name = up_path.replace(f"{self.dir}/", "").split("/", 1)[0]
                 else:
@@ -356,29 +364,38 @@ class TaskListener(TaskConfig):
         name = ospath.basename(sent_message.document.file_name if sent_message.document else sent_message.video.file_name)
         size = sent_message.document.file_size if sent_message.document else sent_message.video.file_size
 
+        # Look up the specific media_info for this file
+        media_info = self.all_media_info.get(name)
+
         total_parts = self.total_parts
         current_part = self.current_part
 
-        msg = f"🎬 <code>{self.name}</code>"
-        msg += f"\n📁 Part {current_part} of {total_parts} | 📂 Total: {get_readable_file_size(self.size)} | ⏱️ {get_readable_time(float(self.media_info['format']['duration']))}"
+        msg = f"🎬 <b>{name}</b>"
 
-        if self.media_info:
+        duration_str = ""
+        if media_info and media_info.get('format'):
+            duration_str = f" | ⏱️ {get_readable_time(float(media_info['format']['duration']))}"
+
+        msg += f"\n\n<b>📁 Part:</b> {current_part} of {total_parts}\n<b>📂 Total:</b> {get_readable_file_size(self.size)}{duration_str}"
+
+        if media_info:
             # Video info
-            video_stream = next((stream for stream in self.streams_kept if stream['codec_type'] == 'video'), None)
+            video_stream = next((s for s in self.streams_kept if s['codec_type'] == 'video'), None) if self.streams_kept else None
             if video_stream:
-                msg += f"\n📊 {video_stream.get('height')}p • {video_stream.get('codec_name')} • "
+                msg += f"\n<b>📊 {video_stream.get('height')}p • {video_stream.get('codec_name')}</b>"
 
             # Audio info
-            audio_stream = next((stream for stream in self.streams_kept if stream['codec_type'] == 'audio'), None)
-            if audio_stream:
-                msg += f"{len(self.streams_kept)}A • {audio_stream.get('tags', {}).get('language', 'N/A').upper()} • Split"
+            audio_streams = [s for s in self.streams_kept if s['codec_type'] == 'audio'] if self.streams_kept else []
+            if audio_streams:
+                msg += f" • {len(audio_streams)}A • {audio_streams[0].get('tags', {}).get('language', 'N/A').upper()}"
+
+            msg += " • Split"
 
             # Source
-            msg += f"\n📡 Source: {self.tag}"
+            msg += f"\n<b>📡 Source:</b> {self.tag}"
 
-            # Original Filename
-            msg += f"\n\n📽️ <code>{self.original_name}</code>"
-            msg += f"\n📏 {get_readable_file_size(size)} | 📅 {datetime.fromtimestamp(time()).strftime('%d %b %Y')}"
+            # Original Filename is now the main title, so we don't need a separate field.
+            msg += f"\n<b>📏 Size:</b> {get_readable_file_size(size)} | <b>📅 Date:</b> {datetime.fromtimestamp(time()).strftime('%d/%m/%Y')}"
 
             # Streams Kept
             msg += "\n\n**Streams Kept:**"
