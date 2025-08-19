@@ -63,12 +63,8 @@ class TelegramUploader:
         self._sent_msg = None
         self._user_session = self._listener.user_transmission
         self._error = ""
-        self.total_parts = 0
-        self.current_part = 0
-        bot_loop.create_task(self._set_total_parts())
-
-    async def _set_total_parts(self):
-        self.total_parts = len(natsorted(await sync_to_async(listdir, self._path)))
+        self._listener.total_parts = 0
+        self._listener.current_part = 0
 
     async def _upload_progress(self, current, _):
         if self._listener.is_cancelled:
@@ -227,7 +223,10 @@ class TelegramUploader:
         if not res:
             return
 
-        self.current_part = 1
+        self._listener.total_parts = len(
+            natsorted(await sync_to_async(listdir, self._path))
+        )
+        self._listener.current_part = 1
         for dirpath, _, files in natsorted(await sync_to_async(walk, self._path)):
             if dirpath.strip().endswith("/yt-dlp-thumb"):
                 continue
@@ -300,7 +299,7 @@ class TelegramUploader:
                     self._up_path
                 ):
                     await remove(self._up_path)
-                self.current_part += 1
+                self._listener.current_part += 1
         for key, value in list(self._media_dict.items()):
             for subkey, msgs in list(value.items()):
                 if len(msgs) > 1:

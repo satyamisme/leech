@@ -213,12 +213,10 @@ class TaskListener(TaskConfig):
             async with task_dict_lock:
                 task_dict[self.mid] = TelegramStatus(self, tg, gid, "up")
 
-            self.total_parts = tg.total_parts
             async for sent_message in tg.upload():
                 if self.is_cancelled:
                     break
                 if sent_message:
-                    self.current_part = tg.current_part
                     await self._send_leech_completion_message(sent_message)
 
             if self.is_cancelled:
@@ -374,7 +372,13 @@ class TaskListener(TaskConfig):
         if sent_message.link:
             buttons.url_button("Download Link", sent_message.link)
         reply_markup = buttons.build_menu(2) if buttons._button else None
-        await send_message(sent_message, msg, reply_markup)
+        try:
+            await send_message(sent_message, msg, reply_markup)
+        except RPCError as e:
+            LOGGER.error(f"Failed to send completion message: {e}")
+            if "BUTTON_URL_INVALID" in str(e) and sent_message.link:
+                LOGGER.warning("Retrying without the button...")
+                await send_message(sent_message, msg)
 
     async def on_upload_complete(
         self, link, files, folders, mime_type, rclone_path="", dir_id="", tg_sent_messages=None
