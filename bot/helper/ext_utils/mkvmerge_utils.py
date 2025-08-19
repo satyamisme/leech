@@ -1,5 +1,4 @@
 import os
-import subprocess
 import glob
 import shutil
 from bot import LOGGER
@@ -7,10 +6,8 @@ from bot.helper.ext_utils.bot_utils import cmd_exec
 
 # Constants for splitting
 MAX_TELEGRAM_SIZE = 2000 * 1024 * 1024  # 2,097,152,000 bytes (2000 MiB)
-# Define the optimal range for split size (1990MiB to 1999MiB)
-MIN_SPLIT_SIZE_BYTES = 1990 * 1024 * 1024
-MAX_SPLIT_SIZE_BYTES = 1999 * 1024 * 1024
-STEP_SIZE_BYTES = 5 * 1024 * 1024  # 5 MiB step for retries
+STEP_SIZE_BYTES = 5 * 1024 * 1024      # 5 MiB step for retries
+MAX_SPLIT_SIZE_BYTES = 1999 * 1024 * 1024 # The absolute maximum split size (1999 MiB)
 
 def get_file_size(file_path):
     """Safely get the size of a file."""
@@ -20,85 +17,84 @@ def get_file_size(file_path):
         LOGGER.error(f"Could not get size of file {file_path}: {e}")
         return 0
 
-async def smart_split_if_needed(file_path: str) -> list:
+async def split_video_if_needed(file_path: str) -> list:
     """
-    Splits a video file using ONLY mkvmerge.
-    It will retry with split sizes from 1999MiB down to 1990MiB (in 5MiB steps)
-    until all parts are under 2000MiB.
+    Splits a video file using ONLY mkvmerge with a dynamic tiered retry strategy.
+
+    Strategy:
+    1. Start with a narrow optimal range (1990-1999 MiB).
+    2. If no valid split is found, lower the minimum split size by 5 MiB.
+    3. Repeat until the minimum split size reaches 1950 MiB.
+
+    This ensures a systematic search from a narrow optimal range to a wider safe range.
     Returns a list of split file paths, or a list containing the original file if splitting fails.
     """
     if not shutil.which('mkvmerge'):
-        LOGGER.error("mkvmerge is not installed. Splitting failed.")
+        LOGGER.error("mkvmerge is not installed.")
         return [file_path]
+
     original_size = get_file_size(file_path)
     if original_size == 0:
         return []
-
-    # If the file is already small enough, no split is needed.
     if original_size <= MAX_TELEGRAM_SIZE:
-        LOGGER.info(f"File ≤ 2000MiB. No split needed.")
+        LOGGER.info("File is already within the 2000MiB limit. No split needed.")
         return [file_path]
 
     dir_name = os.path.dirname(file_path)
     base_name = os.path.splitext(os.path.basename(file_path))[0]
-    output_pattern = os.path.join(dir_name, f"{base_name} - Part %03d.mkv")
+    output_pattern = f"{os.path.join(dir_name, base_name)} - Part %03d.mkv"
 
-    # Start from the highest possible size (1999MiB) and work down to 1990MiB
-    current_split_size_bytes = MAX_SPLIT_SIZE_BYTES
+    # Define the dynamic strategy parameters
+    initial_min_mib = 1990  # Start the search at 1990 MiB
+    final_min_mib = 1950    # Stop the search if min goes below 1950 MiB
+    min_bytes = initial_min_mib * 1024 * 1024
+    step_mib = 5            # Reduce the minimum by 5 MiB on each retry
 
-    while current_split_size_bytes >= MIN_SPLIT_SIZE_BYTES:
-        current_split_size_mib = current_split_size_bytes // (1024 * 1024)
-        LOGGER.info(f"✂️ Attempting to split {file_path} with mkvmerge at {current_split_size_mib}MiB...")
+    LOGGER.info(f"Starting dynamic split strategy. Target range: {initial_min_mib}MiB to 1999MiB, stepping down to {final_min_mib}MiB.")
 
-        # Clean up any leftover files from previous attempts
-        for old_part in glob.glob(output_pattern.replace("%03d", "*")):
-            try:
-                os.remove(old_part)
-                LOGGER.debug(f"Removed old split part: {old_part}")
-            except OSError as e:
-                LOGGER.warning(f"Failed to remove old part {old_part}: {e}")
+    while min_bytes >= final_min_mib * 1024 * 1024:
+        current_size_bytes = MAX_SPLIT_SIZE_BYTES  # Always start from the highest possible size
 
-        # Build the mkvmerge command using bytes for maximum precision
-        mkvmerge_cmd = [
-            "mkvmerge",
-            "-o", output_pattern,
-            "--split", f"size:{current_split_size_bytes}",
-            file_path
-        ]
+        while current_size_bytes >= min_bytes:
+            current_mib = current_size_bytes // (1024 * 1024)
+            LOGGER.info(f"✂️ Trying split size: {current_mib}MiB (Min: {min_bytes//(1024*1024)}MiB)")
 
-        # Run mkvmerge asynchronously
-        _, stderr, returncode = await cmd_exec(mkvmerge_cmd)
+            # Clean up any files from previous attempts
+            for old_file in glob.glob(output_pattern.replace("%03d", "*")):
+                try:
+                    os.remove(old_file)
+                except:
+                    pass
 
-        # Check if mkvmerge executed successfully
-        if returncode != 0:
-            LOGGER.warning(f"mkvmerge failed with return code {returncode}. Stderr: {stderr[:200]}...")
-            # On command failure, reduce the size and retry
-            current_split_size_bytes -= STEP_SIZE_BYTES
-            continue
+            # Build and execute the mkvmerge command
+            cmd = ["mkvmerge", "-o", output_pattern, "--split", f"size:{current_size_bytes}", file_path]
+            _, stderr, return_code = await cmd_exec(cmd)
 
-        # Gather the output files
-        split_files = sorted(glob.glob(os.path.join(dir_name, f"{base_name} - Part *.mkv")))
+            if return_code != 0:
+                LOGGER.warning(f"mkvmerge failed at {current_mib}MiB. Stderr: {stderr[:100]}...")
+                current_size_bytes -= STEP_SIZE_BYTES
+                continue
 
-        # If no split occurred (only one file), or no files were created, retry with a smaller size.
-        if len(split_files) <= 1:
-            LOGGER.warning(f"mkvmerge created {len(split_files)} part(s). No split occurred. Retrying with smaller size.")
-            current_split_size_bytes -= STEP_SIZE_BYTES
-            continue
+            # Gather the created split files
+            split_files = sorted(glob.glob(output_pattern.replace("%03d", "*")))
+            if len(split_files) <= 1:
+                LOGGER.warning(f"No split occurred at {current_mib}MiB.")
+                current_size_bytes -= STEP_SIZE_BYTES
+                continue
 
-        # Check EVERY part, including the final one, for size
-        oversized_parts = [f for f in split_files if get_file_size(f) >= MAX_TELEGRAM_SIZE]
+            # Check every part for the size limit
+            oversized = [f for f in split_files if get_file_size(f) >= MAX_TELEGRAM_SIZE]
+            if not oversized:
+                LOGGER.info(f"✅ Success! Split created {len(split_files)} parts using {current_mib}MiB split size.")
+                return split_files
+            else:
+                LOGGER.warning(f"❌ Part(s) oversized at {current_mib}MiB. Retrying with smaller size.")
+                current_size_bytes -= STEP_SIZE_BYTES
 
-        if not oversized_parts:
-            # Success! All parts are within the 2000 MiB limit.
-            final_size_mib = get_file_size(split_files[-1]) // (1024 * 1024)
-            LOGGER.info(f"✅ Split successful at {current_split_size_mib}MiB! Created {len(split_files)} parts. Final part: {final_size_mib}MiB.")
-            return split_files
-        else:
-            # Some parts are still oversized. Log and retry with a smaller split size.
-            LOGGER.warning(f"❌ Found {len(oversized_parts)} oversized part(s) at {current_split_size_mib}MiB. "
-                         f"Retrying with {current_split_size_bytes - STEP_SIZE_BYTES} bytes.")
-            current_split_size_bytes -= STEP_SIZE_BYTES
+        # If we exit the inner loop, this tier has failed. Lower the minimum and try again.
+        LOGGER.warning(f"⚠️ No valid split found with minimum {min_bytes//(1024*1024)}MiB. Lowering minimum split size...")
+        min_bytes -= step_mib * 1024 * 1024  # Reduce the minimum by 'step_mib' MiB
 
-    # If we exit the loop, all attempts in the 1990-1999MiB range have failed.
-    LOGGER.error(f"❌ All mkvmerge attempts (1990-1999MiB) failed. Could not split {file_path} into valid parts.")
+    # All dynamic attempts have been exhausted
+    LOGGER.error("❌ All dynamic mkvmerge attempts failed. Cannot create valid split parts.")
     return [file_path]

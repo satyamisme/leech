@@ -50,7 +50,7 @@ from .ext_utils.media_utils import (
     get_document_type,
     FFMpeg,
 )
-from .ext_utils.mkvmerge_utils import smart_split_if_needed
+from .ext_utils.mkvmerge_utils import split_video_if_needed
 from .telegram_helper.message_utils import (
     send_message,
     send_status_message,
@@ -1085,7 +1085,7 @@ class TaskConfig:
                     split_size = self.split_size
                 if not self.as_doc and (await get_document_type(f_path))[0]:
                     self.progress = True
-                    split_files = await smart_split_if_needed(f_path)
+                    split_files = await split_video_if_needed(f_path)
                     res = len(split_files) > 1
                 else:
                     self.progress = False
