@@ -177,7 +177,9 @@ class TaskListener(TaskConfig):
                     if self.is_cancelled:
                         return
 
-                    if result is None or (isinstance(result, tuple) and result[0] is None):
+                    if result and isinstance(result, tuple) and result[0] is not None:
+                        self.media_info = result[1]
+                    elif result is None or (isinstance(result, tuple) and result[0] is None):
                         LOGGER.error(f"Video processing failed for {file_path}. Aborting entire task.")
                         await self.on_upload_error(f"Video processing failed for {self.name}.")
                         return
