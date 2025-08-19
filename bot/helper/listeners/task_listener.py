@@ -67,6 +67,7 @@ class TaskListener(TaskConfig):
         self.status_message = None
         self.start_time = time()
         self.last_progress_text = None
+        self.uploaded_files = {}
 
     async def on_task_created(self):
         self.status_message = await send_message(self.message, "🎬 Analyzing Streams... ⏳")
@@ -235,6 +236,8 @@ class TaskListener(TaskConfig):
                 if self.is_cancelled:
                     break
                 if sent_message:
+                    file_name = ospath.basename(sent_message.document.file_name if sent_message.document else sent_message.video.file_name)
+                    self.uploaded_files[file_name] = sent_message
                     await self._send_leech_completion_message(sent_message)
 
             if self.is_cancelled:
@@ -371,10 +374,16 @@ class TaskListener(TaskConfig):
             # Navigation
             if current_part > 1:
                 prev_part_name = name.replace(f".part{current_part:02d}", f".part{current_part-1:02d}")
-                msg += f"\n⬅️ Prev Part: <code>{prev_part_name}</code>"
+                if prev_part_name in self.uploaded_files:
+                    prev_message = self.uploaded_files[prev_part_name]
+                    msg += f"\n⬅️ <a href='{prev_message.link}'>Prev Part</a>"
+                else:
+                    msg += f"\n⬅️ Prev Part: <code>{prev_part_name}</code>"
+
             if current_part < total_parts:
                 next_part_name = name.replace(f".part{current_part:02d}", f".part{current_part+1:02d}")
                 msg += f"\n➡️ Next Part: <code>{next_part_name}</code>"
+
 
             # Final Summary
             msg += f"\n\n✅ Upload Complete (Part {current_part}/{total_parts})"
