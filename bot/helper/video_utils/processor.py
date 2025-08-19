@@ -157,6 +157,9 @@ async def process_video(path, listener):
     if processed_path:
         final_path = processed_path.replace('.processed.mkv', '.mkv')
         await aiorename(processed_path, final_path)
+        if not await aiopath.exists(final_path):
+            LOGGER.error(f"Final processed file {final_path} does not exist after rename!")
+            return None, None
         LOGGER.info("Video processing successful. Output: %s", final_path)
 
         listener.streams_kept = main_video_streams + selected_audio + selected_subtitles
