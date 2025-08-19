@@ -42,7 +42,7 @@ async def run_ffmpeg(command, path, listener):
         LOGGER.error(f"ffmpeg exited with non-zero return code.")
         if listener.is_cancelled:
             return None
-        await listener.onUploadError(f"ffmpeg exited with non-zero return code.")
+        await listener.on_upload_error(f"ffmpeg exited with non-zero return code.")
         return None
 
 async def process_video(path, listener):

@@ -57,7 +57,7 @@ from time import time
 from datetime import datetime
 from ..ext_utils.bot_utils import SetInterval
 from ..ext_utils.status_utils import get_progress_bar_string
-
+from async_walk import async_walk
 import re
 import os
 
@@ -68,9 +68,9 @@ def natural_sort_key(text):
 class TaskListener(TaskConfig):
     def __init__(self):
         super().__init__()
-        self.auto_merge = False
-        self.auto_split = False
-        self.auto_process = False
+        self.auto_merge = False      # -a
+        self.auto_split = False      # -as
+        self.auto_process = False    # -a or -as
         self.streams_kept = None
         self.streams_removed = None
         self.media_info = None
@@ -78,10 +78,11 @@ class TaskListener(TaskConfig):
         self.start_time = time()
         self.last_progress_text = None
         self.uploaded_files = {}
-        self.file_metadata = {}  # filename → {kept, removed, size, duration, original}
+        self.file_metadata = {}      # filename → {kept, removed, size, duration}
         self.total_parts = 1
         self.current_part = 1
         self.size = 0
+        self.original_name = ""
 
     async def on_task_created(self):
         self.status_message = await send_message(self.message, "🎬 Analyzing Streams... ⏳")
@@ -121,36 +122,37 @@ class TaskListener(TaskConfig):
         if len(video_files) == 1:
             return video_files[0]
 
-        from bot.helper.ext_utils.bot_utils import cmd_exec
-        import os
-
-        base_name = os.path.splitext(os.path.basename(video_files[0]))[0]
-        # Remove episode info if present
+        cmd = ["mkvmerge", "-o"]
+        base_name = ospath.splitext(os.path.basename(video_files[0]))[0]
         series_pattern = re.compile(r'(.*?)S?\d{1,2}E?\d{1,3}', re.I)
         match = series_pattern.match(base_name)
         merge_name = match.group(1).strip() if match else base_name
-        merged_path = os.path.join(output_dir, f"{merge_name}.merged.mkv")
+        merged_path = ospath.join(output_dir, f"{merge_name}.merged.mkv")
+        cmd.append(merged_path)
+        cmd.extend(video_files)
 
-        cmd = ["mkvmerge", "-o", merged_path] + video_files
         _, stderr, code = await cmd_exec(cmd)
-
         if code != 0:
             LOGGER.error(f"Merge failed: {stderr}")
             return None
 
-        # Cleanup originals
         for f in video_files:
             if f != merged_path:
                 try:
                     os.remove(f)
                 except:
                     pass
-
         return merged_path
 
     async def _process_and_upload(self, file_path):
-        if file_path.lower().endswith(('.zip', '.rar', '.7z', '.tar', '.gz')):
-            LOGGER.info(f"Skipping archive file: {file_path}")
+        if await aiopath.isdir(file_path):
+            LOGGER.info(f"Uploading directory: {file_path}")
+            await self._upload_directory(file_path)
+            return
+
+        if not await is_video(file_path):
+            LOGGER.info(f"Skipping non-video file: {file_path}")
+            await self._upload_file(file_path)
             return
 
         self.name = ospath.basename(file_path)
@@ -167,7 +169,8 @@ class TaskListener(TaskConfig):
         interval.cancel()
 
         if self.is_cancelled or result is None or (isinstance(result, tuple) and result[0] is None):
-            LOGGER.error(f"Skipping {self.name}")
+            LOGGER.error(f"Skipping {self.name} due to processing failure.")
+            await self._upload_file(file_path)
             return
 
         if isinstance(result, tuple) and result[0] is not None:
@@ -187,18 +190,48 @@ class TaskListener(TaskConfig):
         }
 
         if self.is_leech and not self.compress:
-            await self.proceed_split(up_path, self.gid)
-            if self.is_cancelled: return
-            upload_dir = ospath.dirname(up_path)
+            split_files = await self.proceed_split(up_path, self.gid)
+            if self.is_cancelled:
+                return
+            upload_dir = ospath.dirname(split_files[0])
             tg = TelegramUploader(self, upload_dir)
             async with task_dict_lock:
                 task_dict[self.mid] = TelegramStatus(self, tg, self.gid, "up")
             async for sent_message in tg.upload():
-                if self.is_cancelled: break
+                if self.is_cancelled:
+                    break
                 if sent_message:
                     fname = ospath.basename(sent_message.document.file_name)
                     self.uploaded_files[fname] = sent_message
                     await self._send_leech_completion_message(sent_message)
+
+    async def _upload_directory(self, dir_path):
+        tg = TelegramUploader(self, dir_path)
+        async with task_dict_lock:
+            task_dict[self.mid] = TelegramStatus(self, tg, self.gid, "up")
+        async for sent_message in tg.upload():
+            if self.is_cancelled:
+                break
+            if sent_message:
+                fname = ospath.basename(sent_message.document.file_name)
+                self.uploaded_files[fname] = sent_message
+                await self._send_leech_completion_message(sent_message)
+
+    async def _upload_file(self, file_path):
+        if self.is_cancelled:
+            return
+        if self.status_message:
+            await edit_message(self.status_message, f"📤 **Uploading:** `{os.path.basename(file_path)}`")
+        tg = TelegramUploader(self, file_path)
+        async with task_dict_lock:
+            task_dict[self.mid] = TelegramStatus(self, tg, self.gid, "up")
+        async for sent_message in tg.upload():
+            if self.is_cancelled:
+                break
+            if sent_message:
+                fname = ospath.basename(sent_message.document.file_name)
+                self.uploaded_files[fname] = sent_message
+                await self._send_leech_completion_message(sent_message)
 
     async def on_download_complete(self):
         await sleep(2)
@@ -233,6 +266,7 @@ class TaskListener(TaskConfig):
             gid = download.gid()
 
         LOGGER.info(f"Download completed: {self.name}")
+
         if multi_links:
             await self.on_upload_error(f"{self.name} Downloaded!\nWaiting for other tasks to finish...")
             return
@@ -264,21 +298,24 @@ class TaskListener(TaskConfig):
                 if not merged_path or self.is_cancelled:
                     return
                 up_path = merged_path
-                self.name = os.path.basename(merged_path)
+                self.name = ospath.basename(merged_path)
                 self.original_name = " + ".join([os.path.basename(f) for f in video_files[:3]])
                 if len(video_files) > 3:
                     self.original_name += f" + {len(video_files)-3} more"
                 await self._process_and_upload(up_path)
             elif self.auto_split:
                 for file_path in video_files:
+                    if self.is_cancelled: break
                     await self._process_and_upload(file_path)
             else:
-                # Default: process first video
+                # Default: process first video if no flags
                 await self._process_and_upload(video_files[0])
         else:
+            # Path is a file, not a directory
             if self.auto_process:
                 await self._process_and_upload(up_path)
             else:
+                # Standard upload for non-processed files
                 if self.is_leech:
                     if self.status_message:
                         await edit_message(self.status_message, f"🎬 **Uploading:** `{self.name}` 📤")
@@ -297,7 +334,7 @@ class TaskListener(TaskConfig):
                             self.uploaded_files[fname] = sent_message
                             await self._send_leech_completion_message(sent_message)
                 else:
-                    # Handle GDrive/Rclone
+                    # GDrive/Rclone upload
                     self.size = await get_path_size(up_path)
                     if is_gdrive_id(self.up_dest):
                         drive = GoogleDriveUpload(self, up_path)
@@ -377,13 +414,11 @@ class TaskListener(TaskConfig):
         name = ospath.basename(sent_message.document.file_name if sent_message.document else sent_message.video.file_name)
         size = sent_message.document.file_size if sent_message.document else sent_message.video.file_size
 
-        # Extract base name without part suffix
         base_name = re.sub(r" - Part \d+", "", name)
         base_name = re.sub(r"\.part\d+", "", base_name)
         base_name = f"{os.path.splitext(base_name)[0]}.mkv"
 
         meta = self.file_metadata.get(base_name) or self.file_metadata.get(name)
-
         if meta:
             streams_kept = meta['streams_kept']
             streams_removed = meta['streams_removed']
@@ -391,19 +426,16 @@ class TaskListener(TaskConfig):
             orig_name = meta['original']
             total_size = meta['size']
         else:
-            # Fallback to self (for merged files)
             streams_kept = self.streams_kept
             streams_removed = self.streams_removed
             media_info = self.media_info
-            orig_name = self.original_name
+            orig_name = getattr(self, 'original_name', name)
             total_size = self.size
 
-        # Detect part number
         match = re.search(r"Part (\d+) of (\d+)", name)
         current_part = int(match.group(1)) if match else 1
         total_parts = int(match.group(2)) if match else 1
 
-        # Build message
         msg = f"🎬 <code>{name}</code>"
         if media_info:
             duration = media_info['format']['duration']
