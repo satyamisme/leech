@@ -1,8 +1,8 @@
 # task_listener.py
 
-from aiofiles.os import path as aiopath, listdir, remove
+from aiofiles.os import path as aiopath, listdir, remove, walk
 from asyncio import sleep, gather
-from os import path as ospath, walk
+from os import path as ospath
 from html import escape
 from requests import utils as rutils
 from ... import (
@@ -57,7 +57,6 @@ from time import time
 from datetime import datetime
 from ..ext_utils.bot_utils import SetInterval
 from ..ext_utils.status_utils import get_progress_bar_string
-from async_walk import async_walk
 import re
 import os
 
@@ -282,7 +281,7 @@ class TaskListener(TaskConfig):
 
         if await aiopath.isdir(up_path):
             video_files = []
-            async for root, _, files in async_walk(up_path):
+            async for root, _, files in walk(up_path):
                 for file in files:
                     file_path = ospath.join(root, file)
                     if await is_video(file_path):
