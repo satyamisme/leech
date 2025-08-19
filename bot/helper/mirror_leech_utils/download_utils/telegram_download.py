@@ -2,7 +2,7 @@ from asyncio import Lock, sleep
 from time import time
 from pyrogram.errors import FloodWait, FloodPremiumWait
 
-from .... import (
+from ... import (
     LOGGER,
     task_dict,
     task_dict_lock,
