@@ -7,7 +7,7 @@ import asyncio
 import json
 from time import time
 import os.path as ospath
-from aiofiles.os import rename as aiorename
+from aiofiles.os import rename as aiorename, path as aiopath
 
 async def get_media_info(path):
     """Get media information using ffprobe."""
