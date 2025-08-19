@@ -281,6 +281,13 @@ class TaskListener(TaskConfig):
                 if self.mid in non_queued_up:
                     non_queued_up.remove(self.mid)
             await start_from_queued()
+
+            # Delete the user's command message
+            if not self.is_cancelled and self.message:
+                try:
+                    await delete_message(self.message)
+                except Exception as e:
+                    LOGGER.warning(f"Failed to delete command message: {e}")
         elif is_gdrive_id(self.up_dest):
             LOGGER.info(f"Gdrive Upload Name: {self.name}")
             drive = GoogleDriveUpload(self, up_path)
@@ -475,6 +482,13 @@ class TaskListener(TaskConfig):
                 non_queued_up.remove(self.mid)
 
         await start_from_queued()
+
+        # Delete the user's command message
+        if not self.is_cancelled and self.message:
+            try:
+                await delete_message(self.message)
+            except Exception as e:
+                LOGGER.warning(f"Failed to delete command message: {e}")
 
     async def on_download_error(self, error, button=None):
         async with task_dict_lock:
