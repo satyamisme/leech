@@ -29,6 +29,7 @@ class TelegramDownloadHelper:
 
     async def _download(self, message, path):
         try:
+            # ✅ Safe, compatible download
             await self._client.download_media(
                 message,
                 file_name=path,
