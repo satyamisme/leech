@@ -160,7 +160,28 @@ class TaskListener(TaskConfig):
             if self.is_cancelled: return
             self.name = up_path.replace(f"{self.dir}/", "").split("/", 1)[0]
 
-        if await is_video(up_path):
+        if await aiopath.isdir(up_path):
+            for root, _, files in await sync_to_async(ospath.walk, up_path):
+                for file in files:
+                    file_path = ospath.join(root, file)
+                    if not await is_video(file_path):
+                        continue
+
+                    self.name = ospath.basename(file_path)
+                    if self.status_message:
+                        await edit_message(self.status_message, f"🎬 **Processing Video:** `{self.name}` 🔄")
+
+                    interval = SetInterval(3, self._update_ffmpeg_progress)
+                    result = await process_video(file_path, self)
+                    interval.cancel()
+                    if self.is_cancelled:
+                        return
+
+                    if result is None or (isinstance(result, tuple) and result[0] is None):
+                        LOGGER.error(f"Video processing failed for {file_path}. Aborting entire task.")
+                        await self.on_upload_error(f"Video processing failed for {self.name}.")
+                        return
+        elif await is_video(up_path):
             if self.status_message:
                 await edit_message(self.status_message, f"🎬 **Processing Video:** `{self.name}` 🔄")
 
