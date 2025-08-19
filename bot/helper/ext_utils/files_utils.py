@@ -2,7 +2,7 @@ from aioshutil import rmtree as aiormtree, move
 from asyncio import create_subprocess_exec, sleep, wait_for
 from asyncio.subprocess import PIPE
 from magic import Magic
-from os import walk, path as ospath, readlink
+from os import walk, path as ospath, readlink, scandir
 from re import split as re_split, I, search as re_search, escape
 from aiofiles.os import (
     remove,
@@ -461,3 +461,26 @@ class SevenZ:
                 stderr = "Unable to decode the error!"
             LOGGER.error(f"{stderr}. Unable to zip this path: {dl_path}")
             return dl_path
+
+
+async def async_walk(top):
+    """Asynchronous version of os.walk, using sync_to_async with os.scandir."""
+    try:
+        scandir_it = await sync_to_async(scandir, top)
+    except OSError as e:
+        LOGGER.error(f"Error scanning directory {top}: {e}")
+        return
+
+    dirs = []
+    files = []
+    for entry in scandir_it:
+        if entry.is_dir():
+            dirs.append(entry)
+        else:
+            files.append(entry)
+
+    yield top, [d.name for d in dirs], [f.name for f in files]
+
+    for d in dirs:
+        async for res in async_walk(d.path):
+            yield res
