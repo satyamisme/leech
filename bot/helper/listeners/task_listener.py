@@ -168,10 +168,18 @@ class TaskListener(TaskConfig):
             interval.cancel()
             if self.is_cancelled:
                 return
-            if result and result[0] is not None:
-                processed_path, self.media_info = result
-                up_path = processed_path
-                self.name = up_path.replace(f"{self.dir}/", "").split("/", 1)[0]
+
+            if isinstance(result, tuple):
+                if result[0] is not None:
+                    processed_path, self.media_info = result
+                    up_path = processed_path
+                    self.name = up_path.replace(f"{self.dir}/", "").split("/", 1)[0]
+                else:
+                    LOGGER.error("Video processing failed. Aborting task.")
+                    await self.on_upload_error("Video processing failed.")
+                    return
+            elif isinstance(result, str):
+                up_path = result
             else:
                 LOGGER.error("Video processing failed. Aborting task.")
                 await self.on_upload_error("Video processing failed.")
