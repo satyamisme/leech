@@ -149,6 +149,10 @@ class TaskListener(TaskConfig):
         return merged_path
 
     async def _process_and_upload(self, file_path):
+        if file_path.lower().endswith(('.zip', '.rar', '.7z', '.tar', '.gz')):
+            LOGGER.info(f"Skipping archive file: {file_path}")
+            return
+
         self.name = ospath.basename(file_path)
         self.original_name = self.name
         self.streams_kept = None

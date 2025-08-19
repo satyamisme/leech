@@ -1092,7 +1092,7 @@ class TaskConfig:
                     res = await split_file(f_path, split_size, self)
                 if self.is_cancelled:
                     return False
-                if res:
+                if res or f_size >= self.max_split_size:
                     try:
                         await remove(f_path)
                     except:
