@@ -66,6 +66,7 @@ class TaskListener(TaskConfig):
         self.media_info = None
         self.status_message = None
         self.start_time = time()
+        self.last_progress_text = None
 
     async def on_task_created(self):
         self.status_message = await send_message(self.message, "🎬 Analyzing Streams... ⏳")
@@ -163,13 +164,18 @@ class TaskListener(TaskConfig):
                 await edit_message(self.status_message, f"🎬 **Processing Video:** `{self.name}` 🔄")
 
             interval = SetInterval(3, self._update_ffmpeg_progress)
-            processed_path, self.media_info = await process_video(up_path, self)
+            result = await process_video(up_path, self)
             interval.cancel()
-
-            if self.is_cancelled: return
-            if processed_path:
+            if self.is_cancelled:
+                return
+            if result and result[0] is not None:
+                processed_path, self.media_info = result
                 up_path = processed_path
                 self.name = up_path.replace(f"{self.dir}/", "").split("/", 1)[0]
+            else:
+                LOGGER.error("Video processing failed. Aborting task.")
+                await self.on_upload_error("Video processing failed.")
+                return
 
         if self.join:
             await join_files(up_path)
@@ -261,7 +267,9 @@ class TaskListener(TaskConfig):
                 task = task_dict[self.mid]
                 progress = task.progress()
                 text = f"🎬 **Processing Video:** `{self.name}` 🔄\n{get_progress_bar_string(progress)} {progress}"
-                await edit_message(self.status_message, text)
+                if self.last_progress_text != text:
+                    self.last_progress_text = text
+                    await edit_message(self.status_message, text)
 
     def _format_stream_info(self, stream, stream_type):
         details = []

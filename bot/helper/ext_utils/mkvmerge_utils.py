@@ -3,6 +3,7 @@ import subprocess
 import glob
 import shutil
 from bot import LOGGER
+from bot.helper.ext_utils.bot_utils import cmd_exec
 
 # Constants for splitting
 MAX_TELEGRAM_SIZE = 2000 * 1024 * 1024  # 2,097,152,000 bytes (2000 MiB)
@@ -19,7 +20,7 @@ def get_file_size(file_path):
         LOGGER.error(f"Could not get size of file {file_path}: {e}")
         return 0
 
-def smart_split_if_needed(file_path: str) -> list:
+async def smart_split_if_needed(file_path: str) -> list:
     """
     Splits a video file using ONLY mkvmerge.
     It will retry with split sizes from 1999MiB down to 1990MiB (in 5MiB steps)
@@ -65,51 +66,38 @@ def smart_split_if_needed(file_path: str) -> list:
             file_path
         ]
 
-        try:
-            # Run mkvmerge
-            result = subprocess.run(
-                mkvmerge_cmd,
-                capture_output=True,
-                text=True,
-                timeout=600  # 10 minutes timeout
-            )
+        # Run mkvmerge asynchronously
+        _, stderr, returncode = await cmd_exec(mkvmerge_cmd)
 
-            # Check if mkvmerge executed successfully
-            if result.returncode != 0:
-                LOGGER.warning(f"mkvmerge failed with return code {result.returncode}. Stderr: {result.stderr[:200]}...")
-                # On command failure, reduce the size and retry
-                current_split_size_bytes -= STEP_SIZE_BYTES
-                continue
+        # Check if mkvmerge executed successfully
+        if returncode != 0:
+            LOGGER.warning(f"mkvmerge failed with return code {returncode}. Stderr: {stderr[:200]}...")
+            # On command failure, reduce the size and retry
+            current_split_size_bytes -= STEP_SIZE_BYTES
+            continue
 
-            # Gather the output files
-            split_files = sorted(glob.glob(os.path.join(dir_name, f"{base_name} - Part *.mkv")))
+        # Gather the output files
+        split_files = sorted(glob.glob(os.path.join(dir_name, f"{base_name} - Part *.mkv")))
 
-            # If no split occurred (only one file), or no files were created, retry with a smaller size.
-            if len(split_files) <= 1:
-                LOGGER.warning(f"mkvmerge created {len(split_files)} part(s). No split occurred. Retrying with smaller size.")
-                current_split_size_bytes -= STEP_SIZE_BYTES
-                continue
+        # If no split occurred (only one file), or no files were created, retry with a smaller size.
+        if len(split_files) <= 1:
+            LOGGER.warning(f"mkvmerge created {len(split_files)} part(s). No split occurred. Retrying with smaller size.")
+            current_split_size_bytes -= STEP_SIZE_BYTES
+            continue
 
-            # Check EVERY part, including the final one, for size
-            oversized_parts = [f for f in split_files if get_file_size(f) >= MAX_TELEGRAM_SIZE]
+        # Check EVERY part, including the final one, for size
+        oversized_parts = [f for f in split_files if get_file_size(f) >= MAX_TELEGRAM_SIZE]
 
-            if not oversized_parts:
-                # Success! All parts are within the 2000 MiB limit.
-                final_size_mib = get_file_size(split_files[-1]) // (1024 * 1024)
-                LOGGER.info(f"✅ Split successful at {current_split_size_mib}MiB! Created {len(split_files)} parts. Final part: {final_size_mib}MiB.")
-                return split_files
-            else:
-                # Some parts are still oversized. Log and retry with a smaller split size.
-                LOGGER.warning(f"❌ Found {len(oversized_parts)} oversized part(s) at {current_split_size_mib}MiB. "
-                             f"Retrying with {current_split_size_bytes - STEP_SIZE_BYTES} bytes.")
-                current_split_size_bytes -= STEP_SIZE_BYTES
-
-        except subprocess.TimeoutExpired:
-            LOGGER.error(f"mkvmerge timed out while splitting {file_path}.")
-            break
-        except Exception as e:
-            LOGGER.error(f"An unexpected error occurred while running mkvmerge: {e}")
-            break
+        if not oversized_parts:
+            # Success! All parts are within the 2000 MiB limit.
+            final_size_mib = get_file_size(split_files[-1]) // (1024 * 1024)
+            LOGGER.info(f"✅ Split successful at {current_split_size_mib}MiB! Created {len(split_files)} parts. Final part: {final_size_mib}MiB.")
+            return split_files
+        else:
+            # Some parts are still oversized. Log and retry with a smaller split size.
+            LOGGER.warning(f"❌ Found {len(oversized_parts)} oversized part(s) at {current_split_size_mib}MiB. "
+                         f"Retrying with {current_split_size_bytes - STEP_SIZE_BYTES} bytes.")
+            current_split_size_bytes -= STEP_SIZE_BYTES
 
     # If we exit the loop, all attempts in the 1990-1999MiB range have failed.
     LOGGER.error(f"❌ All mkvmerge attempts (1990-1999MiB) failed. Could not split {file_path} into valid parts.")
