@@ -1,6 +1,6 @@
 # task_listener.py
 
-from aiofiles.os import path as aiopath, listdir, remove, walk
+from aiofiles.os import path as aiopath, listdir, remove
 from asyncio import sleep, gather
 from os import path as ospath
 from html import escape
@@ -26,6 +26,7 @@ from ..ext_utils.db_handler import database
 from ..ext_utils.files_utils import (
     get_path_size,
     clean_download,
+    async_walk,
     clean_target,
     join_files,
     create_recursive_symlink,
@@ -281,7 +282,7 @@ class TaskListener(TaskConfig):
 
         if await aiopath.isdir(up_path):
             video_files = []
-            async for root, _, files in walk(up_path):
+            async for root, _, files in async_walk(up_path):
                 for file in files:
                     file_path = ospath.join(root, file)
                     if await is_video(file_path):
