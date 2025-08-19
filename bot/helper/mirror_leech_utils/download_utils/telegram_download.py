@@ -18,11 +18,8 @@ class TelegramDownloadHelper:
         try:
             self._path = path
             self._folder_name = folder_name.strip("/")
-            if not self._listener.is_recursive:
-                self._total_files = 1
-                self._total_folders = 0
-            else:
-                pass
+            self._total_files = 1
+            self._total_folders = 0
 
             if await self._download(message, path):
                 await self._listener.on_download_complete()
