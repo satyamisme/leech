@@ -426,15 +426,17 @@ class TaskConfig:
                 or self.user_dict.get("LEECH_SPLIT_SIZE")
                 or Config.LEECH_SPLIT_SIZE
             )
+            self.max_split_size = (
+                TgClient.MAX_SPLIT_SIZE if self.user_transmission else 2086666240
+            )
+            if self.split_size == 0:
+                self.split_size = self.max_split_size
+            self.split_size = min(self.split_size, self.max_split_size)
             self.equal_splits = (
                 self.user_dict.get("EQUAL_SPLITS")
                 or Config.EQUAL_SPLITS
                 and "EQUAL_SPLITS" not in self.user_dict
             )
-            self.max_split_size = (
-                TgClient.MAX_SPLIT_SIZE if self.user_transmission else 2097152000
-            )
-            self.split_size = min(self.split_size, self.max_split_size)
 
             if not self.as_doc:
                 self.as_doc = (
@@ -524,9 +526,19 @@ class TaskConfig:
             if self.multi > 2:
                 msgts += f"\nCancel Multi: <code>/{BotCommands.CancelTaskCommand[1]} {self.multi_tag}</code>"
             nextmsg = await send_message(nextmsg, msgts)
+        if not nextmsg or isinstance(nextmsg, str):
+            LOGGER.error(f"Failed to send multi-task message: {nextmsg}")
+            if self.multi_tag in multi_tags:
+                multi_tags.discard(self.multi_tag)
+            return
         nextmsg = await self.client.get_messages(
             chat_id=self.message.chat.id, message_ids=nextmsg.id
         )
+        if not nextmsg:
+            LOGGER.error("Failed to get sent message.")
+            if self.multi_tag in multi_tags:
+                multi_tags.discard(self.multi_tag)
+            return
         if self.message.from_user:
             nextmsg.from_user = self.user
         else:

@@ -3,7 +3,7 @@ from aioshutil import rmtree
 from asyncio import sleep
 from logging import getLogger
 from natsort import natsorted
-from os import walk, path as ospath
+from os import walk, path as ospath, listdir
 from time import time
 from re import match as re_match, sub as re_sub
 from pyrogram.errors import FloodWait, RPCError, FloodPremiumWait, BadRequest
@@ -25,12 +25,13 @@ from tenacity import (
     RetryError,
 )
 
-from ...core.config_manager import Config
-from ...core.mltb_client import TgClient
-from ..ext_utils.bot_utils import sync_to_async
-from ..ext_utils.files_utils import is_archive, get_base_name
-from ..telegram_helper.message_utils import delete_message
-from ..ext_utils.media_utils import (
+from bot import bot_loop
+from bot.core.config_manager import Config
+from bot.core.mltb_client import TgClient
+from bot.helper.ext_utils.bot_utils import sync_to_async
+from bot.helper.ext_utils.files_utils import is_archive, get_base_name
+from bot.helper.telegram_helper.message_utils import delete_message
+from bot.helper.ext_utils.media_utils import (
     get_media_info,
     get_document_type,
     get_video_thumbnail,
@@ -62,6 +63,12 @@ class TelegramUploader:
         self._sent_msg = None
         self._user_session = self._listener.user_transmission
         self._error = ""
+        self.total_parts = 0
+        self.current_part = 0
+        bot_loop.create_task(self._set_total_parts())
+
+    async def _set_total_parts(self):
+        self.total_parts = len(natsorted(await sync_to_async(listdir, self._path)))
 
     async def _upload_progress(self, current, _):
         if self._listener.is_cancelled:
@@ -219,6 +226,8 @@ class TelegramUploader:
         res = await self._msg_to_reply()
         if not res:
             return
+
+        self.current_part = 1
         for dirpath, _, files in natsorted(await sync_to_async(walk, self._path)):
             if dirpath.strip().endswith("/yt-dlp-thumb"):
                 continue
@@ -248,13 +257,13 @@ class TelegramUploader:
                         group_lists = [
                             x for v in self._media_dict.values() for x in v.keys()
                         ]
-                        match = re_match(r".+(?=\.0*\d+$)|.+(?=\.part\d+\..+$)", f_path)
+                        match = re_match(r".+(?=\..+\.0*\d+$)|.+(?=\.part\d+\..+$)", f_path)
                         if not match or match and match.group(0) not in group_lists:
                             for key, value in list(self._media_dict.items()):
                                 for subkey, msgs in list(value.items()):
                                     if len(msgs) > 1:
                                         await self._send_media_group(subkey, key, msgs)
-                    if self._listener.hybrid_leech and self._listener.user_transmission:
+                    if self._listener.hybrid_leech and self._listener.user_transmission or Config.USE_USER_SESSION_FOR_BIG_FILES:
                         self._user_session = f_size > 2097152000
                         if self._user_session:
                             self._sent_msg = await TgClient.user.get_messages(
@@ -271,12 +280,10 @@ class TelegramUploader:
                     await self._upload_file(cap_mono, file_, f_path)
                     if self._listener.is_cancelled:
                         return
-                    if (
-                        not self._is_corrupted
-                        and (self._listener.is_super_chat or self._listener.up_dest)
-                        and not self._is_private
-                    ):
-                        self._msgs_dict[self._sent_msg.link] = file_
+                    if not self._is_corrupted:
+                        yield self._sent_msg
+                        if self._listener.is_super_chat or self._listener.up_dest and not self._is_private:
+                            self._msgs_dict[self._sent_msg.link] = file_
                     await sleep(1)
                 except Exception as err:
                     if isinstance(err, RetryError):
@@ -293,6 +300,7 @@ class TelegramUploader:
                     self._up_path
                 ):
                     await remove(self._up_path)
+                self.current_part += 1
         for key, value in list(self._media_dict.items()):
             for subkey, msgs in list(value.items()):
                 if len(msgs) > 1:
@@ -313,12 +321,6 @@ class TelegramUploader:
             await self._listener.on_upload_error(
                 f"Files Corrupted or unable to upload. {self._error or 'Check logs!'}"
             )
-            return
-        LOGGER.info(f"Leech Completed: {self._listener.name}")
-        await self._listener.on_upload_complete(
-            None, self._msgs_dict, self._total_files, self._corrupted
-        )
-        return
 
     @retry(
         wait=wait_exponential(multiplier=2, min=4, max=8),
