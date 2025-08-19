@@ -198,9 +198,13 @@ class TaskListener(TaskConfig):
             self.name = up_path.replace(f"{self.dir}/", "").split("/", 1)[0]
 
         if self.is_leech and not self.compress:
+            is_file = self.is_file
             await self.proceed_split(up_path, gid)
-            if self.is_cancelled: return
+            if self.is_cancelled:
+                return
             self.clear()
+            if is_file:
+                up_path = ospath.dirname(up_path)
 
         self.size = await get_path_size(up_path)
         if self.size == 0:
