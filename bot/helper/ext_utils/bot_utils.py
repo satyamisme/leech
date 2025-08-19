@@ -96,6 +96,8 @@ def arg_parser(items, arg_base):
     total = len(items)
 
     bool_arg_set = {
+        "-a",
+        "-as",
         "-b",
         "-e",
         "-z",
