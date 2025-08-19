@@ -1,6 +1,6 @@
 from aiofiles.os import path as aiopath, listdir, remove
 from asyncio import sleep, gather
-from os import path as ospath
+from os import path as ospath, walk
 from html import escape
 from requests import utils as rutils
 
@@ -161,7 +161,7 @@ class TaskListener(TaskConfig):
             self.name = up_path.replace(f"{self.dir}/", "").split("/", 1)[0]
 
         if await aiopath.isdir(up_path):
-            for root, _, files in await sync_to_async(ospath.walk, up_path):
+            for root, _, files in await sync_to_async(walk, up_path):
                 for file in files:
                     file_path = ospath.join(root, file)
                     if not await is_video(file_path):
