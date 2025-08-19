@@ -228,8 +228,8 @@ class TaskListener(TaskConfig):
             if self.is_cancelled:
                 return
 
-    if self.status_message:
-        await delete_message(self.status_message)
+            if self.status_message:
+                await delete_message(self.status_message)
 
             # Final cleanup for leech tasks
             await clean_download(self.dir)
@@ -245,7 +245,6 @@ class TaskListener(TaskConfig):
                 if self.mid in non_queued_up:
                     non_queued_up.remove(self.mid)
             await start_from_queued()
-
         elif is_gdrive_id(self.up_dest):
             LOGGER.info(f"Gdrive Upload Name: {self.name}")
             drive = GoogleDriveUpload(self, up_path)
