@@ -1,9 +1,10 @@
+# task_listener.py
+
 from aiofiles.os import path as aiopath, listdir, remove
 from asyncio import sleep, gather
 from os import path as ospath, walk
 from html import escape
 from requests import utils as rutils
-
 from ... import (
     intervals,
     task_dict,
@@ -20,7 +21,7 @@ from ... import (
 from ...core.config_manager import Config
 from ...core.torrent_manager import TorrentManager
 from ..common import TaskConfig
-from ..ext_utils.bot_utils import sync_to_async
+from ..ext_utils.bot_utils import sync_to_async, cmd_exec
 from ..ext_utils.db_handler import database
 from ..ext_utils.files_utils import (
     get_path_size,
@@ -33,7 +34,7 @@ from ..ext_utils.files_utils import (
     is_video,
 )
 from ..ext_utils.links_utils import is_gdrive_id
-from ..ext_utils.status_utils import get_readable_file_size
+from ..ext_utils.status_utils import get_readable_file_size, get_readable_time
 from ..ext_utils.task_manager import start_from_queued, check_running_tasks
 from ..mirror_leech_utils.gdrive_utils.upload import GoogleDriveUpload
 from ..mirror_leech_utils.rclone_utils.transfer import RcloneTransferHelper
@@ -49,18 +50,27 @@ from ..telegram_helper.message_utils import (
     delete_status,
     update_status_message,
     send_status_message,
+    edit_message,
+    delete_message,
 )
-
-
 from time import time
 from datetime import datetime
-from ..telegram_helper.message_utils import send_message, edit_message, delete_message, get_readable_message
 from ..ext_utils.bot_utils import SetInterval
-from ..ext_utils.status_utils import get_progress_bar_string, get_readable_time
+from ..ext_utils.status_utils import get_progress_bar_string
+
+import re
+import os
+
+# Natural sort for correct S01E01, S01E02, ..., S01E10 ordering
+def natural_sort_key(text):
+    return [int(c) if c.isdigit() else c.lower() for c in re.split(r'(\d+)', text)]
 
 class TaskListener(TaskConfig):
     def __init__(self):
         super().__init__()
+        self.auto_merge = False
+        self.auto_split = False
+        self.auto_process = False
         self.streams_kept = None
         self.streams_removed = None
         self.media_info = None
@@ -68,14 +78,17 @@ class TaskListener(TaskConfig):
         self.start_time = time()
         self.last_progress_text = None
         self.uploaded_files = {}
-        self.all_media_info = {}
+        self.file_metadata = {}  # filename → {kept, removed, size, duration, original}
+        self.total_parts = 1
+        self.current_part = 1
+        self.size = 0
 
     async def on_task_created(self):
         self.status_message = await send_message(self.message, "🎬 Analyzing Streams... ⏳")
 
     async def clean(self):
         try:
-            if st := intervals["status"]:
+            if st := intervals.get("status"):
                 for intvl in list(st.values()):
                     intvl.cancel()
             intervals["status"].clear()
@@ -95,40 +108,107 @@ class TaskListener(TaskConfig):
             if (
                 self.folder_name
                 and self.same_dir
-                and self.mid in self.same_dir[self.folder_name]["tasks"]
+                and self.mid in self.same_dir.get(self.folder_name, {}).get("tasks", [])
             ):
                 self.same_dir[self.folder_name]["tasks"].remove(self.mid)
                 self.same_dir[self.folder_name]["total"] -= 1
 
     async def on_download_start(self):
-        if (
-            self.is_super_chat
-            and Config.INCOMPLETE_TASK_NOTIFIER
-            and Config.DATABASE_URL
-        ):
-            await database.add_incomplete_task(
-                self.message.chat.id, self.message.link, self.tag
-            )
+        if self.is_super_chat and Config.INCOMPLETE_TASK_NOTIFIER and Config.DATABASE_URL:
+            await database.add_incomplete_task(self.message.chat.id, self.message.link, self.tag)
+
+    async def _merge_videos(self, video_files, output_dir):
+        if len(video_files) == 1:
+            return video_files[0]
+
+        from bot.helper.ext_utils.bot_utils import cmd_exec
+        import os
+
+        base_name = os.path.splitext(os.path.basename(video_files[0]))[0]
+        # Remove episode info if present
+        series_pattern = re.compile(r'(.*?)S?\d{1,2}E?\d{1,3}', re.I)
+        match = series_pattern.match(base_name)
+        merge_name = match.group(1).strip() if match else base_name
+        merged_path = os.path.join(output_dir, f"{merge_name}.merged.mkv")
+
+        cmd = ["mkvmerge", "-o", merged_path] + video_files
+        _, stderr, code = await cmd_exec(cmd)
+
+        if code != 0:
+            LOGGER.error(f"Merge failed: {stderr}")
+            return None
+
+        # Cleanup originals
+        for f in video_files:
+            if f != merged_path:
+                try:
+                    os.remove(f)
+                except:
+                    pass
+
+        return merged_path
+
+    async def _process_and_upload(self, file_path):
+        self.name = ospath.basename(file_path)
+        self.original_name = self.name
+        self.streams_kept = None
+        self.streams_removed = None
+        self.media_info = None
+
+        if self.status_message:
+            await edit_message(self.status_message, f"🎬 **Processing:** `{self.name}` 🔄")
+
+        interval = SetInterval(3, self._update_ffmpeg_progress)
+        result = await process_video(file_path, self)
+        interval.cancel()
+
+        if self.is_cancelled or result is None or (isinstance(result, tuple) and result[0] is None):
+            LOGGER.error(f"Skipping {self.name}")
+            return
+
+        if isinstance(result, tuple) and result[0] is not None:
+            up_path = result[0]
+            self.media_info = result[1]
+        else:
+            up_path = file_path
+
+        self.size = await get_path_size(up_path)
+        self.file_metadata[self.name] = {
+            'name': self.name,
+            'original': self.original_name,
+            'media_info': self.media_info,
+            'streams_kept': self.streams_kept,
+            'streams_removed': self.streams_removed,
+            'size': self.size
+        }
+
+        if self.is_leech and not self.compress:
+            await self.proceed_split(up_path, self.gid)
+            if self.is_cancelled: return
+            upload_dir = ospath.dirname(up_path)
+            tg = TelegramUploader(self, upload_dir)
+            async with task_dict_lock:
+                task_dict[self.mid] = TelegramStatus(self, tg, self.gid, "up")
+            async for sent_message in tg.upload():
+                if self.is_cancelled: break
+                if sent_message:
+                    fname = ospath.basename(sent_message.document.file_name)
+                    self.uploaded_files[fname] = sent_message
+                    await self._send_leech_completion_message(sent_message)
 
     async def on_download_complete(self):
         await sleep(2)
         if self.is_cancelled:
             return
+
         multi_links = False
-        if (
-            self.folder_name
-            and self.same_dir
-            and self.mid in self.same_dir[self.folder_name]["tasks"]
-        ):
+        if self.folder_name and self.same_dir and self.mid in self.same_dir.get(self.folder_name, {}).get("tasks", []):
             async with same_directory_lock:
                 while True:
                     async with task_dict_lock:
                         if self.mid not in self.same_dir[self.folder_name]["tasks"]:
                             return
-                        if (
-                            self.same_dir[self.folder_name]["total"] <= 1
-                            or len(self.same_dir[self.folder_name]["tasks"]) > 1
-                        ):
+                        if self.same_dir[self.folder_name]["total"] <= 1 or len(self.same_dir[self.folder_name]["tasks"]) > 1:
                             if self.same_dir[self.folder_name]["total"] > 1:
                                 self.same_dir[self.folder_name]["tasks"].remove(self.mid)
                                 self.same_dir[self.folder_name]["total"] -= 1
@@ -142,15 +222,15 @@ class TaskListener(TaskConfig):
                     await sleep(1)
 
         async with task_dict_lock:
-            if self.is_cancelled: return
-            if self.mid not in task_dict: return
+            if self.is_cancelled or self.mid not in task_dict:
+                return
             download = task_dict[self.mid]
             self.name = download.name()
             gid = download.gid()
-        LOGGER.info(f"Download completed: {self.name}")
 
+        LOGGER.info(f"Download completed: {self.name}")
         if multi_links:
-            await self.on_upload_error(f"{self.name} Downloaded!\n\nWaiting for other tasks to finish...")
+            await self.on_upload_error(f"{self.name} Downloaded!\nWaiting for other tasks to finish...")
             return
 
         dl_path = f"{self.dir}/{self.name}"
@@ -158,158 +238,99 @@ class TaskListener(TaskConfig):
 
         if self.extract:
             up_path = await self.proceed_extract(up_path, gid)
-            if self.is_cancelled: return
+            if self.is_cancelled:
+                return
             self.name = up_path.replace(f"{self.dir}/", "").split("/", 1)[0]
 
         if await aiopath.isdir(up_path):
-            for root, _, files in await sync_to_async(walk, up_path):
+            video_files = []
+            async for root, _, files in async_walk(up_path):
                 for file in files:
                     file_path = ospath.join(root, file)
-                    if not await is_video(file_path):
-                        continue
+                    if await is_video(file_path):
+                        video_files.append(file_path)
+            video_files.sort(key=natural_sort_key)
 
-                    # Reset state for each file
-                    self.name = ospath.basename(file_path)
-                    self.original_name = self.name
-                    self.media_info = None
-                    self.streams_kept = None
-                    self.streams_removed = None
-
-                    if self.status_message:
-                        await edit_message(self.status_message, f"🎬 **Processing Video:** `{self.name}` 🔄")
-
-                    interval = SetInterval(3, self._update_ffmpeg_progress)
-                    result = await process_video(file_path, self)
-                    interval.cancel()
-                    if self.is_cancelled:
-                        return
-
-                    if result and isinstance(result, tuple) and result[0] is not None:
-                        self.all_media_info[self.name] = result[1]
-                    elif result is None or (isinstance(result, tuple) and result[0] is None):
-                        LOGGER.error(f"Video processing failed for {file_path}. Aborting entire task.")
-                        await self.on_upload_error(f"Video processing failed for {self.name}.")
-                        return
-        elif await is_video(up_path):
-            if self.status_message:
-                await edit_message(self.status_message, f"🎬 **Processing Video:** `{self.name}` 🔄")
-
-            interval = SetInterval(3, self._update_ffmpeg_progress)
-            result = await process_video(up_path, self)
-            interval.cancel()
-            if self.is_cancelled:
+            if not video_files:
+                await self.on_upload_error("No video files found!")
                 return
 
-            if isinstance(result, tuple):
-                if result[0] is not None:
-                    processed_path, self.media_info = result
-                    self.all_media_info[self.name] = self.media_info
-                    up_path = processed_path
-                    self.name = up_path.replace(f"{self.dir}/", "").split("/", 1)[0]
-                else:
-                    LOGGER.error("Video processing failed. Aborting task.")
-                    await self.on_upload_error("Video processing failed.")
+            if self.auto_merge:
+                merged_path = await self._merge_videos(video_files, up_path)
+                if not merged_path or self.is_cancelled:
                     return
-            elif isinstance(result, str):
-                up_path = result
+                up_path = merged_path
+                self.name = os.path.basename(merged_path)
+                self.original_name = " + ".join([os.path.basename(f) for f in video_files[:3]])
+                if len(video_files) > 3:
+                    self.original_name += f" + {len(video_files)-3} more"
+                await self._process_and_upload(up_path)
+            elif self.auto_split:
+                for file_path in video_files:
+                    await self._process_and_upload(file_path)
             else:
-                LOGGER.error("Video processing failed. Aborting task.")
-                await self.on_upload_error("Video processing failed.")
-                return
+                # Default: process first video
+                await self._process_and_upload(video_files[0])
+        else:
+            if self.auto_process:
+                await self._process_and_upload(up_path)
+            else:
+                if self.is_leech:
+                    if self.status_message:
+                        await edit_message(self.status_message, f"🎬 **Uploading:** `{self.name}` 📤")
+                    LOGGER.info(f"Leech Name: {self.name}")
+                    upload_path = up_path
+                    if await aiopath.isfile(upload_path):
+                        upload_path = ospath.dirname(upload_path)
+                    tg = TelegramUploader(self, upload_path)
+                    async with task_dict_lock:
+                        task_dict[self.mid] = TelegramStatus(self, tg, gid, "up")
+                    async for sent_message in tg.upload():
+                        if self.is_cancelled:
+                            break
+                        if sent_message:
+                            fname = ospath.basename(sent_message.document.file_name)
+                            self.uploaded_files[fname] = sent_message
+                            await self._send_leech_completion_message(sent_message)
+                else:
+                    # Handle GDrive/Rclone
+                    self.size = await get_path_size(up_path)
+                    if is_gdrive_id(self.up_dest):
+                        drive = GoogleDriveUpload(self, up_path)
+                        async with task_dict_lock:
+                            task_dict[self.mid] = GoogleDriveStatus(self, drive, gid, "up")
+                        await sync_to_async(drive.upload)
+                    else:
+                        RCTransfer = RcloneTransferHelper(self)
+                        async with task_dict_lock:
+                            task_dict[self.mid] = RcloneStatus(self, RCTransfer, gid, "up")
+                        await RCTransfer.upload(up_path)
 
-        if self.join:
-            await join_files(up_path)
-
-        if self.name_sub:
-            up_path = await self.substitute(up_path)
-            self.name = up_path.replace(f"{self.dir}/", "").split("/", 1)[0]
-
-        if self.compress:
-            up_path = await self.proceed_compress(up_path, gid)
-            if self.is_cancelled: return
-            self.name = up_path.replace(f"{self.dir}/", "").split("/", 1)[0]
-
-        if self.is_leech and not self.compress:
-            is_file = self.is_file
-            await self.proceed_split(up_path, gid)
-            if self.is_cancelled:
-                return
-            self.clear()
-            if is_file:
-                up_path = ospath.dirname(up_path)
-
-        self.size = await get_path_size(up_path)
-        if self.size == 0:
-            await self.on_upload_error("File size is zero")
+        if self.is_cancelled:
             return
 
-        add_to_queue, event = await check_running_tasks(self, "up")
-        if add_to_queue:
-            LOGGER.info(f"Added to Queue/Upload: {self.name}")
-            async with task_dict_lock:
-                task_dict[self.mid] = QueueStatus(self, gid, "Up")
-            await event.wait()
-            if self.is_cancelled: return
-            LOGGER.info(f"Start from Queued/Upload: {self.name}")
+        if self.status_message:
+            await delete_message(self.status_message)
 
-        if self.is_leech:
-            if self.status_message:
-                await edit_message(self.status_message, f"🎬 **Uploading:** `{self.name}` 📤")
-            LOGGER.info(f"Leech Name: {self.name}")
-            upload_path = up_path
-            if await aiopath.isfile(upload_path):
-                upload_path = ospath.dirname(upload_path)
-            tg = TelegramUploader(self, upload_path)
-            async with task_dict_lock:
-                task_dict[self.mid] = TelegramStatus(self, tg, gid, "up")
-
-            async for sent_message in tg.upload():
-                if self.is_cancelled:
-                    break
-                if sent_message:
-                    file_name = ospath.basename(sent_message.document.file_name if sent_message.document else sent_message.video.file_name)
-                    self.uploaded_files[file_name] = sent_message
-                    await self._send_leech_completion_message(sent_message)
-
-            if self.is_cancelled:
-                return
-
-            if self.status_message:
-                await delete_message(self.status_message)
-
-            # Final cleanup for leech tasks
-            await clean_download(self.dir)
-            async with task_dict_lock:
-                if self.mid in task_dict:
-                    del task_dict[self.mid]
-                count = len(task_dict)
-            if count == 0:
-                await self.clean()
-            else:
-                await update_status_message(self.message.chat.id)
-            async with queue_dict_lock:
-                if self.mid in non_queued_up:
-                    non_queued_up.remove(self.mid)
-            await start_from_queued()
-
-            # Delete the user's command message
-            if not self.is_cancelled and self.message:
-                try:
-                    await delete_message(self.message)
-                except Exception as e:
-                    LOGGER.warning(f"Failed to delete command message: {e}")
-        elif is_gdrive_id(self.up_dest):
-            LOGGER.info(f"Gdrive Upload Name: {self.name}")
-            drive = GoogleDriveUpload(self, up_path)
-            async with task_dict_lock:
-                task_dict[self.mid] = GoogleDriveStatus(self, drive, gid, "up")
-            await sync_to_async(drive.upload)
+        await clean_download(self.dir)
+        async with task_dict_lock:
+            if self.mid in task_dict:
+                del task_dict[self.mid]
+            count = len(task_dict)
+        if count == 0:
+            await self.clean()
         else:
-            LOGGER.info(f"Rclone Upload Name: {self.name}")
-            RCTransfer = RcloneTransferHelper(self)
-            async with task_dict_lock:
-                task_dict[self.mid] = RcloneStatus(self, RCTransfer, gid, "up")
-            await RCTransfer.upload(up_path)
+            await update_status_message(self.message.chat.id)
+        async with queue_dict_lock:
+            if self.mid in non_queued_up:
+                non_queued_up.remove(self.mid)
+        await start_from_queued()
+
+        if not self.is_cancelled and self.message:
+            try:
+                await delete_message(self.message)
+            except Exception as e:
+                LOGGER.warning(f"Failed to delete command message: {e}")
 
     async def _update_ffmpeg_progress(self):
         if self.status_message is None:
@@ -324,9 +345,8 @@ class TaskListener(TaskConfig):
                     await edit_message(self.status_message, text)
 
     def _format_stream_info(self, stream, stream_type):
-        details = []
         if stream_type == 'video':
-            details.append(f"<code>{stream.get('codec_name', 'N/A')}")
+            details = [f"<code>{stream.get('codec_name', 'N/A')}"]
             if 'profile' in stream:
                 details.append(f"{stream['profile']}")
             details.append(f"{stream.get('height')}p")
@@ -334,151 +354,121 @@ class TaskListener(TaskConfig):
                 fps = stream['r_frame_rate'].split('/')[0]
                 details.append(f"{fps}fps</code>")
             return ', '.join(details)
-
-        index = stream.get('index', 'N/A')
-        lang = stream.get('tags', {}).get('language', 'N/A').upper()
-        codec = stream.get('codec_name', 'N/A')
-
         if stream_type == 'audio':
+            index = stream.get('index', 'N/A')
+            lang = stream.get('tags', {}).get('language', 'N/A').upper()
+            codec = stream.get('codec_name', 'N/A')
             layout = stream.get('channel_layout', 'N/A')
-
-            bitrate_str = stream.get('bit_rate')
-            if not bitrate_str:
-                bitrate_str = stream.get('tags', {}).get('BPS')
-            if not bitrate_str:
-                bitrate_str = stream.get('tags', {}).get('bitrate')
-
-            if bitrate_str and bitrate_str.isdigit():
-                bitrate = f"{int(bitrate_str) // 1000}kbps"
-            else:
-                bitrate = 'N/A'
-
+            bitrate_str = stream.get('bit_rate') or stream.get('tags', {}).get('BPS') or stream.get('tags', {}).get('bitrate')
+            bitrate = f"{int(bitrate_str) // 1000}kbps" if bitrate_str and bitrate_str.isdigit() else 'N/A'
             return f"<code>{index}. {codec} {lang}, {layout}, {bitrate}</code>"
-
         if stream_type == 'subtitle':
+            index = stream.get('index', 'N/A')
+            lang = stream.get('tags', {}).get('language', 'N/A').upper()
+            codec = stream.get('codec_name', 'N/A')
             default = "Default" if stream.get('disposition', {}).get('default') else ""
             return f"<code>{index}. {codec} {lang}, {default}</code>"
 
     async def _send_leech_completion_message(self, sent_message):
-        # This new method only builds and sends the message for a single file.
         name = ospath.basename(sent_message.document.file_name if sent_message.document else sent_message.video.file_name)
         size = sent_message.document.file_size if sent_message.document else sent_message.video.file_size
 
-        # Look up the specific media_info for this file
-        media_info = self.all_media_info.get(name)
+        # Extract base name without part suffix
+        base_name = re.sub(r" - Part \d+", "", name)
+        base_name = re.sub(r"\.part\d+", "", base_name)
+        base_name = f"{os.path.splitext(base_name)[0]}.mkv"
 
-        total_parts = self.total_parts
-        current_part = self.current_part
+        meta = self.file_metadata.get(base_name) or self.file_metadata.get(name)
 
-        msg = f"🎬 <b>{name}</b>"
+        if meta:
+            streams_kept = meta['streams_kept']
+            streams_removed = meta['streams_removed']
+            media_info = meta['media_info']
+            orig_name = meta['original']
+            total_size = meta['size']
+        else:
+            # Fallback to self (for merged files)
+            streams_kept = self.streams_kept
+            streams_removed = self.streams_removed
+            media_info = self.media_info
+            orig_name = self.original_name
+            total_size = self.size
 
-        duration_str = ""
-        if media_info and media_info.get('format'):
-            duration_str = f" | ⏱️ {get_readable_time(float(media_info['format']['duration']))}"
+        # Detect part number
+        match = re.search(r"Part (\d+) of (\d+)", name)
+        current_part = int(match.group(1)) if match else 1
+        total_parts = int(match.group(2)) if match else 1
 
-        msg += f"\n\n<b>📁 Part:</b> {current_part} of {total_parts}\n<b>📂 Total:</b> {get_readable_file_size(self.size)}{duration_str}"
-
+        # Build message
+        msg = f"🎬 <code>{name}</code>"
         if media_info:
-            # Video info
-            video_stream = next((s for s in self.streams_kept if s['codec_type'] == 'video'), None) if self.streams_kept else None
+            duration = media_info['format']['duration']
+            msg += f"\n📁 Part {current_part} of {total_parts} | 📂 Total: {get_readable_file_size(total_size)} | ⏱️ {get_readable_time(float(duration))}"
+
+            video_stream = next((s for s in streams_kept if s['codec_type'] == 'video' and s.get('disposition', {}).get('attached_pic') == 0), None)
+            audio_stream = next((s for s in streams_kept if s['codec_type'] == 'audio'), None)
+
             if video_stream:
-                msg += f"\n<b>📊 {video_stream.get('height')}p • {video_stream.get('codec_name')}</b>"
+                msg += f"\n📊 {video_stream.get('height')}p • {video_stream.get('codec_name')} • "
+            if audio_stream:
+                msg += f"{len([s for s in streams_kept if s['codec_type'] == 'audio'])}A • {audio_stream.get('tags', {}).get('language', 'N/A').upper()} • Split"
+            msg += f"\n📡 Source: {self.tag}"
+            msg += f"\n📽️ <code>{orig_name}</code>"
+            msg += f"\n📏 {get_readable_file_size(size)} | 📅 {datetime.fromtimestamp(time()).strftime('%d %b %Y')}"
 
-            # Audio info
-            audio_streams = [s for s in self.streams_kept if s['codec_type'] == 'audio'] if self.streams_kept else []
-            if audio_streams:
-                msg += f" • {len(audio_streams)}A • {audio_streams[0].get('tags', {}).get('language', 'N/A').upper()}"
+            msg += "\n**Streams Kept:**"
+            if video_stream:
+                msg += f"\n🎥 {self._format_stream_info(video_stream, 'video')}"
+            for s in [s for s in streams_kept if s['codec_type'] == 'audio']:
+                msg += f"\n🔊 {self._format_stream_info(s, 'audio')}"
 
-            msg += " • Split"
+            if streams_removed:
+                msg += "\n**Streams Removed:**"
+                for s in [s for s in streams_removed if s['codec_type'] == 'audio']:
+                    msg += f"\n🚫 {self._format_stream_info(s, 'audio')}"
+                for s in [s for s in streams_removed if s['codec_type'] == 'subtitle']:
+                    msg += f"\n🚫 {self._format_stream_info(s, 'subtitle')}"
 
-            # Source
-            msg += f"\n<b>📡 Source:</b> {self.tag}"
-
-            # Original Filename is now the main title, so we don't need a separate field.
-            msg += f"\n<b>📏 Size:</b> {get_readable_file_size(size)} | <b>📅 Date:</b> {datetime.fromtimestamp(time()).strftime('%d/%m/%Y')}"
-
-            # Streams Kept
-            msg += "\n\n**Streams Kept:**"
-            video_streams_kept = [s for s in self.streams_kept if s['codec_type'] == 'video' and s.get('disposition', {}).get('attached_pic') == 0]
-            audio_streams_kept = [s for s in self.streams_kept if s['codec_type'] == 'audio']
-
-            if video_streams_kept:
-                vid_info = self._format_stream_info(video_streams_kept[0], 'video')
-                msg += f"\n🎥 {vid_info}"
-            for stream in audio_streams_kept:
-                msg += f"\n🔊 {self._format_stream_info(stream, 'audio')}"
-
-            # Streams Removed
-            if self.streams_removed:
-                msg += "\n\n**Streams Removed:**"
-                audio_removed = [s for s in self.streams_removed if s['codec_type'] == 'audio']
-                subs_removed = [s for s in self.streams_removed if s['codec_type'] == 'subtitle']
-                for stream in audio_removed:
-                    msg += f"\n🚫 {self._format_stream_info(stream, 'audio')}"
-                for stream in subs_removed:
-                    msg += f"\n🚫 {self._format_stream_info(stream, 'subtitle')}"
-
-            # Navigation
             if current_part > 1:
-                prev_part_name = name.replace(f".part{current_part:02d}", f".part{current_part-1:02d}")
-                if prev_part_name in self.uploaded_files:
-                    prev_message = self.uploaded_files[prev_part_name]
-                    msg += f"\n⬅️ <a href='{prev_message.link}'>Prev Part</a>"
+                prev_name = name.replace(f"Part {current_part}", f"Part {current_part-1}")
+                if prev_name in self.uploaded_files:
+                    msg += f"\n⬅️ <a href='{self.uploaded_files[prev_name].link}'>Prev Part</a>"
                 else:
-                    msg += f"\n⬅️ Prev Part: <code>{prev_part_name}</code>"
-
+                    msg += f"\n⬅️ Prev Part: <code>{prev_name}</code>"
             if current_part < total_parts:
-                next_part_name = name.replace(f".part{current_part:02d}", f".part{current_part+1:02d}")
-                msg += f"\n➡️ Next Part: <code>{next_part_name}</code>"
+                next_name = name.replace(f"Part {current_part}", f"Part {current_part+1}")
+                msg += f"\n➡️ Next Part: <code>{next_name}</code>"
 
-
-            # Final Summary
-            msg += f"\n\n✅ Upload Complete (Part {current_part}/{total_parts})"
+            msg += f"\n✅ Upload Complete (Part {current_part}/{total_parts})"
             if current_part == total_parts:
                 msg += "\n✨ All parts uploaded successfully!"
                 msg += f"\n🔗 Files are now available in your chat."
                 msg += f"\n⚡️ {self.tag}"
-
         else:
-            # Fallback for non-media files
-            msg = f"🎉 <b>Task Completed by {self.tag}</b>"
-            msg += f"\n\n<b>Name:</b> <code>{name}</code>"
-            msg += f"\n<b>Size:</b> {get_readable_file_size(size)}"
-            msg += f"\n\n<b>cc:</b> {self.tag}"
+            msg = f"🎉 <b>Task Completed by {self.tag}</b>\n<b>Name:</b> <code>{name}</code>\n<b>Size:</b> {get_readable_file_size(size)}\n<b>cc:</b> {self.tag}"
 
         buttons = ButtonMaker()
         if sent_message.link:
             buttons.url_button("Download Link", sent_message.link)
         reply_markup = buttons.build_menu(2) if buttons._button else None
+
         try:
             await send_message(sent_message, msg, reply_markup)
-        except RPCError as e:
+        except Exception as e:
             LOGGER.error(f"Failed to send completion message: {e}")
-            if "BUTTON_URL_INVALID" in str(e) and sent_message.link:
-                LOGGER.warning("Retrying without the button...")
-                await send_message(sent_message, msg)
+            await send_message(sent_message, msg)
 
-    async def on_upload_complete(
-        self, link, files, folders, mime_type, rclone_path="", dir_id="", tg_sent_messages=None
-    ):
-        # This method is now primarily for GDrive/Rclone uploads.
+    async def on_upload_complete(self, link, files, folders, mime_type, rclone_path="", dir_id="", tg_sent_messages=None):
         if self.is_super_chat and Config.INCOMPLETE_TASK_NOTIFIER and Config.DATABASE_URL:
             await database.rm_complete_task(self.message.link)
-
-        msg = f"🎉 <b>Task Completed by {self.tag}</b>"
-        msg += f"\n\n<b>Name:</b> <code>{self.name}</code>"
-        msg += f"\n<b>Size:</b> {get_readable_file_size(self.size)}"
-        msg += f"\n\n<b>cc:</b> {self.tag}"
-
+        msg = f"🎉 <b>Task Completed by {self.tag}</b>\n<b>Name:</b> <code>{self.name}</code>\n<b>Size:</b> {get_readable_file_size(self.size)}\n<b>cc:</b> {self.tag}"
         if self.status_message:
             await delete_message(self.status_message)
-
         buttons = ButtonMaker()
         if link:
             buttons.url_button("Cloud Link", link)
         reply_markup = buttons.build_menu(2) if buttons._button else None
         await send_message(self.message, msg, reply_markup)
-
         if self.seed:
             await clean_target(self.up_dir)
             async with queue_dict_lock:
@@ -495,14 +485,10 @@ class TaskListener(TaskConfig):
             await self.clean()
         else:
             await update_status_message(self.message.chat.id)
-
         async with queue_dict_lock:
             if self.mid in non_queued_up:
                 non_queued_up.remove(self.mid)
-
         await start_from_queued()
-
-        # Delete the user's command message
         if not self.is_cancelled and self.message:
             try:
                 await delete_message(self.message)
@@ -521,14 +507,8 @@ class TaskListener(TaskConfig):
             await self.clean()
         else:
             await update_status_message(self.message.chat.id)
-
-        if (
-            self.is_super_chat
-            and Config.INCOMPLETE_TASK_NOTIFIER
-            and Config.DATABASE_URL
-        ):
+        if self.is_super_chat and Config.INCOMPLETE_TASK_NOTIFIER and Config.DATABASE_URL:
             await database.rm_complete_task(self.message.link)
-
         async with queue_dict_lock:
             if self.mid in queued_dl:
                 queued_dl[self.mid].set()
@@ -540,7 +520,6 @@ class TaskListener(TaskConfig):
                 non_queued_dl.remove(self.mid)
             if self.mid in non_queued_up:
                 non_queued_up.remove(self.mid)
-
         await start_from_queued()
         await sleep(3)
         await clean_download(self.dir)
@@ -559,14 +538,8 @@ class TaskListener(TaskConfig):
             await self.clean()
         else:
             await update_status_message(self.message.chat.id)
-
-        if (
-            self.is_super_chat
-            and Config.INCOMPLETE_TASK_NOTIFIER
-            and Config.DATABASE_URL
-        ):
+        if self.is_super_chat and Config.INCOMPLETE_TASK_NOTIFIER and Config.DATABASE_URL:
             await database.rm_complete_task(self.message.link)
-
         async with queue_dict_lock:
             if self.mid in queued_dl:
                 queued_dl[self.mid].set()
@@ -578,7 +551,6 @@ class TaskListener(TaskConfig):
                 non_queued_dl.remove(self.mid)
             if self.mid in non_queued_up:
                 non_queued_up.remove(self.mid)
-
         await start_from_queued()
         await sleep(3)
         await clean_download(self.dir)
