@@ -2,12 +2,12 @@ from asyncio import Lock, sleep
 from time import time
 from pyrogram.errors import FloodWait, FloodPremiumWait
 
-from ... import (
+from .... import (
     LOGGER,
     task_dict,
     task_dict_lock,
 )
-from ...core.mltb_client import TgClient
+from ....core.mltb_client import TgClient
 from ...ext_utils.task_manager import check_running_tasks, stop_duplicate_check
 from ...mirror_leech_utils.status_utils.queue_status import QueueStatus
 from ...mirror_leech_utils.status_utils.telegram_status import TelegramStatus
