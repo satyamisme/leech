@@ -56,6 +56,7 @@ class VidEcxecutor(FFProgress):
                 LOGGER.info('Added to Queue/Download: %s', self.name)
                 async with task_dict_lock:
                     task_dict[self.listener.mid] = QueueStatus(self.listener, self.size, self._gid, 'dl')
+                await self.listener.onDownloadStart()
                 if update:
                     await sendStatusMessage(self.listener.message)
                 await event.wait()
