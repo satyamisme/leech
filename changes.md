@@ -89,3 +89,48 @@ Despite the fixes and features implemented, the following critical issues remain
 The highest priority should be to understand and fix the `AttributeError` in `run_multi`, as this is a clear and reproducible bug that breaks a core feature. After that, the message ordering issue needs to be tackled. This will likely require a deep understanding of the `asyncio` event loop and the `pyrogram` library, and how they interact in a multi-tasking environment. The solution may involve a different approach to sending the completion messages, perhaps by creating a queue of completion messages to be sent after all file uploads have been confirmed.
 
 I wish the next developer the best of luck.
+
+---
+
+# Final Comprehensive Fixes
+
+## 1. High-Level Summary
+This series of changes addresses a wide range of critical bugs that were causing crashes, incorrect behavior, and a poor user experience. The fixes span across the task lifecycle, from command parsing and link validation to video processing and completion message generation. The goal was to create a stable, robust, and feature-rich bot.
+
+## 2. Bugs Fixed
+
+1.  **`AttributeError: 'Mirror' object has no attribute 'gid'`**:
+    -   **Issue:** The bot would crash when trying to split a file because `self.gid` was not initialized in the `TaskListener`.
+    -   **Fix:** Initialized `self.gid = ""` in `TaskListener.__init__` and set it from the download object in `on_download_complete`, ensuring it's available for `proceed_split`.
+
+2.  **`onUploadError` Typo**:
+    -   **Issue:** The bot would crash during video processing due to an `AttributeError` caused by the incorrect method name `onUploadError`.
+    -   **Fix:** Corrected all instances of the call to the proper `on_upload_error` in `bot/helper/video_utils/processor.py`.
+
+3.  **`IsADirectoryError` After Extraction**:
+    -   **Issue:** The bot would crash when calling `is_video` on a directory after extracting an archive.
+    -   **Fix:** Refactored `task_listener.py` to handle directories correctly. It now uses `os.walk` (via `sync_to_async`) to iterate through the files *inside* the extracted directory and calls `is_video` on each file, not the directory itself.
+
+4.  **Premature Status Message**:
+    -   **Issue:** The "Analyzing Streams..." message appeared before a link was validated, leading to confusing UX when a command was sent without a link.
+    -   **Fix:** Refactored the `new_event` method in `bot/modules/mirror_leech.py`. The `on_task_created()` call is now moved to *after* the link validation logic.
+
+5.  **Incorrect Naming in Completion Messages**:
+    -   **Issue:** In multi-part uploads, all completion messages would show the name of the last processed file.
+    -   **Fix:** Implemented a `self.file_metadata` dictionary in `TaskListener`. This dictionary stores metadata for each file individually. The `_send_leech_completion_message` method was updated to use this dictionary, ensuring each completion message displays the correct file name and metadata.
+
+6.  **`NoneType` Error in Completion Messages**:
+    -   **Issue:** The bot would crash with `AttributeError: 'NoneType' object has no attribute 'file_name'` if an uploaded file was a video and not a document.
+    -   **Fix:** Added a check in `_send_leech_completion_message` to handle both `sent_message.document` and `sent_message.video`, preventing the crash.
+
+7.  **Incorrect Relative Imports**:
+    -   **Issue:** The bot would crash on startup with an `ImportError` because of an incorrect number of dots in the relative import path in `telegram_download.py`.
+    -   **Fix:** Corrected the import path from `from .... import` to `from ... import` to accurately reflect the directory structure.
+
+8.  **Redundant `processor.py`**:
+    -   **Issue:** The user reported that `processor.py` was a duplicate file.
+    -   **Fix:** After correcting the `onUploadError` typo within it, the file was deleted as per the user's instructions.
+
+## 3. New Features Implemented
+
+-   **`-a` and `-as` Flags**: The command parser in `mirror_leech.py` was updated to recognize the `-a` (auto-merge) and `-as` (auto-split/process separately) flags, and the `TaskListener` was updated to handle them.
