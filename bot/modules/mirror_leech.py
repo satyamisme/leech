@@ -74,8 +74,9 @@ class Mirror(TaskListener):
     async def new_event(self):
         text = self.message.text.split("\n")
         input_list = text[0].split(" ")
-
         args = {
+            "-a": False,
+            "-as": False,
             "-doc": False,
             "-med": False,
             "-d": False,
@@ -109,15 +110,18 @@ class Mirror(TaskListener):
             "-tl": "",
             "-ff": set(),
         }
-
         arg_parser(input_list[1:], args)
 
+        # Extract args
+        self.auto_merge = args["-a"]
+        self.auto_split = args["-as"]
+        self.auto_process = self.auto_merge or self.auto_split
+        self.link = args["link"]
         self.select = args["-s"]
         self.seed = args["-d"]
         self.name = args["-n"]
         self.up_dest = args["-up"]
         self.rc_flags = args["-rcf"]
-        self.link = args["link"]
         self.compress = args["-z"]
         self.extract = args["-e"]
         self.join = args["-j"]
@@ -135,7 +139,7 @@ class Mirror(TaskListener):
         self.thumbnail_layout = args["-tl"]
         self.as_doc = args["-doc"]
         self.as_med = args["-med"]
-        self.folder_name = f"/{args["-m"]}".rstrip("/") if len(args["-m"]) > 0 else ""
+        self.folder_name = f"/{args['-m']}".rstrip("/") if len(args["-m"]) > 0 else ""
         self.bot_trans = args["-bt"]
         self.user_trans = args["-ut"]
         self.ffmpeg_cmds = args["-ff"]
@@ -149,107 +153,27 @@ class Mirror(TaskListener):
         bulk_end = 0
         ratio = None
         seed_time = None
-        reply_to = None
+        reply_to = self.message.reply_to_message
         file_ = None
         session = ""
 
-        try:
-            self.multi = int(args["-i"])
-        except:
-            self.multi = 0
+        # Check for link (inline or reply)
+        if not self.link and reply_to:
+            if reply_to.text:
+                self.link = reply_to.text.strip().split("\n")[0]
 
-        if not isinstance(self.seed, bool):
-            dargs = self.seed.split(":")
-            ratio = dargs[0] or None
-            if len(dargs) == 2:
-                seed_time = dargs[1] or None
-            self.seed = True
-
-        if not isinstance(is_bulk, bool):
-            dargs = is_bulk.split(":")
-            bulk_start = dargs[0] or 0
-            if len(dargs) == 2:
-                bulk_end = dargs[1] or 0
-            is_bulk = True
-
-        if not is_bulk:
-            if self.multi > 0:
-                if self.folder_name:
-                    async with task_dict_lock:
-                        if self.folder_name in self.same_dir:
-                            self.same_dir[self.folder_name]["tasks"].add(self.mid)
-                            for fd_name in self.same_dir:
-                                if fd_name != self.folder_name:
-                                    self.same_dir[fd_name]["total"] -= 1
-                        elif self.same_dir:
-                            self.same_dir[self.folder_name] = {
-                                "total": self.multi,
-                                "tasks": {self.mid},
-                            }
-                            for fd_name in self.same_dir:
-                                if fd_name != self.folder_name:
-                                    self.same_dir[fd_name]["total"] -= 1
-                        else:
-                            self.same_dir = {
-                                self.folder_name: {
-                                    "total": self.multi,
-                                    "tasks": {self.mid},
-                                }
-                            }
-                elif self.same_dir:
-                    async with task_dict_lock:
-                        for fd_name in self.same_dir:
-                            self.same_dir[fd_name]["total"] -= 1
-        else:
-            await self.init_bulk(input_list, bulk_start, bulk_end, Mirror)
+        if not self.link and not reply_to:
+            await send_message(self.message, COMMAND_USAGE["mirror"][0], COMMAND_USAGE["mirror"][1])
             return
 
-        if len(self.bulk) != 0:
-            del self.bulk[0]
+        await self.on_task_created()
 
-        await self.run_multi(input_list, Mirror)
-
-        await self.get_tag(text)
-
-        path = f"{DOWNLOAD_DIR}{self.mid}{self.folder_name}"
-
-        if not self.link and (reply_to := self.message.reply_to_message):
-            if reply_to.text:
-                self.link = reply_to.text.split("\n", 1)[0].strip()
         if is_telegram_link(self.link):
             try:
                 reply_to, session = await get_tg_link_message(self.link)
             except Exception as e:
                 await send_message(self.message, f"ERROR: {e}")
-                await self.remove_from_same_dir()
                 return
-
-        if isinstance(reply_to, list):
-            self.bulk = reply_to
-            b_msg = input_list[:1]
-            self.options = " ".join(input_list[1:])
-            b_msg.append(f"{self.bulk[0]} -i {len(self.bulk)} {self.options}")
-            nextmsg = await send_message(self.message, " ".join(b_msg))
-            nextmsg = await self.client.get_messages(
-                chat_id=self.message.chat.id, message_ids=nextmsg.id
-            )
-            if self.message.from_user:
-                nextmsg.from_user = self.user
-            else:
-                nextmsg.sender_chat = self.user
-            await Mirror(
-                self.client,
-                nextmsg,
-                self.is_qbit,
-                self.is_leech,
-                self.is_jd,
-                self.is_nzb,
-                self.same_dir,
-                self.bulk,
-                self.multi_tag,
-                self.options,
-            ).new_event()
-            return
 
         if reply_to:
             file_ = (
@@ -263,106 +187,35 @@ class Mirror(TaskListener):
                 or reply_to.animation
                 or None
             )
-
-            if file_ is None:
-                if reply_text := reply_to.text:
-                    self.link = reply_text.split("\n", 1)[0].strip()
-                else:
-                    reply_to = None
-            elif reply_to.document and (
-                file_.mime_type == "application/x-bittorrent"
-                or file_.file_name.endswith((".torrent", ".dlc", ".nzb"))
-            ):
-                self.link = await reply_to.download()
-                file_ = None
+            if file_ is None and reply_to.text:
+                 self.link = reply_to.text.strip().split("\n")[0]
 
         if (
             not self.link
             and file_ is None
-            or is_telegram_link(self.link)
-            and reply_to is None
-            or file_ is None
-            and not is_url(self.link)
-            and not is_magnet(self.link)
-            and not await aiopath.exists(self.link)
-            and not is_rclone_path(self.link)
-            and not is_gdrive_id(self.link)
-            and not is_gdrive_link(self.link)
         ):
             await send_message(
                 self.message, COMMAND_USAGE["mirror"][0], COMMAND_USAGE["mirror"][1]
             )
-            await self.remove_from_same_dir()
             return
 
-        await self.on_task_created()
-
-        if len(self.link) > 0:
-            LOGGER.info(self.link)
-
-        try:
-            await self.before_start()
-        except Exception as e:
-            await send_message(self.message, e)
-            await self.remove_from_same_dir()
-            return
-
-        if (
-            not self.is_jd
-            and not self.is_nzb
-            and not self.is_qbit
-            and not is_magnet(self.link)
-            and not is_rclone_path(self.link)
-            and not is_gdrive_link(self.link)
-            and not self.link.endswith(".torrent")
-            and file_ is None
-            and not is_gdrive_id(self.link)
-        ):
-            content_type = await get_content_type(self.link)
-            if content_type is None or re_match(r"text/html|text/plain", content_type):
-                try:
-                    self.link = await sync_to_async(direct_link_generator, self.link)
-                    if isinstance(self.link, tuple):
-                        self.link, headers = self.link
-                    elif isinstance(self.link, str):
-                        LOGGER.info(f"Generated link: {self.link}")
-                except DirectDownloadLinkException as e:
-                    e = str(e)
-                    if "This link requires a password!" not in e:
-                        LOGGER.info(e)
-                    if e.startswith("ERROR:"):
-                        await send_message(self.message, e)
-                        await self.remove_from_same_dir()
-                        return
-                except Exception as e:
-                    await send_message(self.message, e)
-                    await self.remove_from_same_dir()
-                    return
+        path = f"{DOWNLOAD_DIR}{self.mid}{self.folder_name}"
 
         if file_ is not None:
             await TelegramDownloadHelper(self).add_download(
                 reply_to, f"{path}/", session
             )
-        elif isinstance(self.link, dict):
-            await add_direct_download(self, path)
+        elif is_gdrive_link(self.link) or is_gdrive_id(self.link):
+            await add_gd_download(self, path)
+        elif is_rclone_path(self.link):
+            await add_rclone_download(self, f"{path}/")
         elif self.is_jd:
             await add_jd_download(self, path)
         elif self.is_qbit:
             await add_qb_torrent(self, path, ratio, seed_time)
         elif self.is_nzb:
             await add_nzb(self, path)
-        elif is_rclone_path(self.link):
-            await add_rclone_download(self, f"{path}/")
-        elif is_gdrive_link(self.link) or is_gdrive_id(self.link):
-            await add_gd_download(self, path)
         else:
-            ussr = args["-au"]
-            pssw = args["-ap"]
-            if ussr or pssw:
-                auth = f"{ussr}:{pssw}"
-                headers.extend(
-                    [f"authorization: Basic {b64encode(auth.encode()).decode('ascii')}"]
-                )
             await add_aria2_download(self, path, headers, ratio, seed_time)
 
 
