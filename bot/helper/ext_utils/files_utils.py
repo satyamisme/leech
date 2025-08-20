@@ -296,6 +296,8 @@ async def split_file(f_path, split_size, listener):
 
 async def is_video(path: str):
     """Check if a file is a video."""
+    if await aiopath.isdir(path):
+        return False
     mime_type = await sync_to_async(get_mime_type, path)
     if mime_type.startswith("video"):
         return True

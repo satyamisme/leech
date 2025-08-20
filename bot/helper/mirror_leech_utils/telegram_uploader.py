@@ -184,17 +184,21 @@ class TelegramUploader:
     async def _send_screenshots(self, dirpath, outputs):
         inputs = [
             InputMediaPhoto(ospath.join(dirpath, p), p.rsplit("/", 1)[-1])
-            for p in outputs
+            for p in natsorted(outputs)
         ]
         for i in range(0, len(inputs), 10):
-            batch = inputs[i : i + 10]
-            self._sent_msg = (
-                await self._sent_msg.reply_media_group(
-                    media=batch,
-                    quote=True,
-                    disable_notification=True,
-                )
-            )[-1]
+            batch = inputs[i:i+10]
+            try:
+                sent_messages = await self._sent_msg.reply_media_group(media=batch, quote=True, disable_notification=True)
+                if sent_messages:
+                    self._sent_msg = sent_messages[-1]
+            except Exception as e:
+                LOGGER.error(f"Failed to send screenshot batch: {e}")
+                for img in batch:
+                    try:
+                        await self._sent_msg.reply_photo(photo=img.media, caption=img.caption, quote=True, disable_notification=True)
+                    except Exception as e2:
+                        LOGGER.error(f"Failed to send individual screenshot: {e2}")
 
     async def _send_media_group(self, subkey, key, msgs):
         for index, msg in enumerate(msgs):
@@ -369,6 +373,21 @@ class TelegramUploader:
                     disable_notification=True,
                     progress=self._upload_progress,
                 )
+                if not self._listener.is_cancelled and not self._listener.compress:
+                    # Attach subtitles
+                    name_no_ext, _ = ospath.splitext(self._up_path)
+                    dirpath = ospath.dirname(self._up_path)
+                    for sub_ext in ('.srt', '.ass', '.vtt'):
+                        sub_file = f"{name_no_ext}{sub_ext}"
+                        if await aiopath.exists(sub_file):
+                            try:
+                                await self._sent_msg.reply_document(
+                                    document=sub_file,
+                                    caption=f"🔖 Subtitle: {ospath.basename(sub_file)}",
+                                    disable_notification=True,
+                                )
+                            except Exception as e:
+                                LOGGER.error(f"Failed to attach subtitle {ospath.basename(sub_file)}: {e}")
             elif is_video:
                 key = "videos"
                 duration = (await get_media_info(self._up_path))[0]

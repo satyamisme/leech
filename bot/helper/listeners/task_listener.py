@@ -21,8 +21,9 @@ from ... import (
 from ...core.config_manager import Config
 from ...core.torrent_manager import TorrentManager
 from ..common import TaskConfig
-from ..ext_utils.bot_utils import sync_to_async
+from ..ext_utils.bot_utils import sync_to_async, cmd_exec
 from ..ext_utils.db_handler import database
+from natsort import natsorted
 from ..ext_utils.files_utils import (
     get_path_size,
     clean_download,
@@ -60,6 +61,29 @@ from ..ext_utils.bot_utils import SetInterval
 from ..ext_utils.status_utils import get_progress_bar_string, get_readable_time
 
 class TaskListener(TaskConfig):
+    async def _split_large_file(self, file_path):
+        if not await aiopath.isfile(file_path):
+            return file_path
+        size = await aiopath.getsize(file_path)
+        if size <= 2000000000:  # 2GB
+            return file_path
+        LOGGER.info(f"Splitting large file: {file_path}")
+        dir_path = ospath.dirname(file_path)
+        base_name = ospath.basename(file_path)
+        cmd = ["split", "-b", "1900M", file_path, f"{base_name}.part"]
+        try:
+            _, stderr, code = await cmd_exec(cmd, cwd=dir_path)
+            if code == 0:
+                if await aiopath.exists(file_path):
+                    await remove(file_path)
+                return dir_path
+            else:
+                LOGGER.error(f"Generic split failed: {stderr.decode().strip()}")
+                return file_path
+        except Exception as e:
+            LOGGER.error(f"Error during split: {e}")
+            return file_path
+
     def __init__(self):
         super().__init__()
         self.gid = ""
@@ -163,44 +187,62 @@ class TaskListener(TaskConfig):
         if self.extract:
             up_path = await self.proceed_extract(up_path, gid)
             if self.is_cancelled: return
-            self.name = up_path.replace(f"{self.dir}/", "").split("/", 1)[0]
+            self.name = ospath.basename(up_path)
 
-        if await is_video(up_path):
-            if self.status_message:
-                await edit_message(self.status_message, f"🎬 **Processing Video:** `{self.name}` 🔄")
-
+        if await aiopath.isdir(up_path):
+            # Process videos in directory
+            for f in natsorted(await listdir(up_path)):
+                file_path = ospath.join(up_path, f)
+                if not await aiopath.isfile(file_path):
+                    continue
+                if await is_video(file_path):
+                    LOGGER.info(f"Processing video from dir: {f}")
+                    interval = SetInterval(3, self._update_ffmpeg_progress)
+                    await process_video(file_path, self)
+                    interval.cancel()
+                    if self.is_cancelled: return
+            # For directories, we upload the whole folder, so up_path is correct
+        elif await aiopath.isfile(up_path) and await is_video(up_path):
+            # Process single video file
             interval = SetInterval(3, self._update_ffmpeg_progress)
-            processed_path, self.media_info = await process_video(up_path, self)
+            result = await process_video(up_path, self)
             interval.cancel()
-
             if self.is_cancelled: return
-
-            self.file_metadata[self.name] = {
-                'name': self.name,
-                'original': self.original_name,
-                'media_info': self.media_info,
-                'streams_kept': self.streams_kept,
-                'streams_removed': self.streams_removed,
-                'size': self.size
-            }
-            if processed_path:
-                up_path = processed_path
-                self.name = up_path.replace(f"{self.dir}/", "").split("/", 1)[0]
+            if isinstance(result, tuple) and result[0]:
+                up_path, self.media_info = result
+            elif isinstance(result, str):
+                up_path = result
+            self.name = ospath.basename(up_path)
 
         if self.join:
             await join_files(up_path)
 
         if self.name_sub:
             up_path = await self.substitute(up_path)
-            self.name = up_path.replace(f"{self.dir}/", "").split("/", 1)[0]
+            self.name = ospath.basename(up_path)
 
         if self.compress:
             up_path = await self.proceed_compress(up_path, gid)
             if self.is_cancelled: return
-            self.name = up_path.replace(f"{self.dir}/", "").split("/", 1)[0]
+            self.name = ospath.basename(up_path)
 
         if self.is_leech and not self.compress:
-            await self.proceed_split(up_path, gid)
+            is_dir = await aiopath.isdir(up_path)
+            if is_dir:
+                # Split large non-video files in the directory
+                for f in natsorted(await listdir(up_path)):
+                    f_path = ospath.join(up_path, f)
+                    if await aiopath.isfile(f_path):
+                        if not await is_video(f_path):
+                            await self._split_large_file(f_path)
+                        else: # Mkvmerge split for videos
+                            await self.proceed_split(f_path, gid)
+            elif await aiopath.isfile(up_path):
+                if await is_video(up_path):
+                    await self.proceed_split(up_path, gid)
+                else: # large non-video file
+                    up_path = await self._split_large_file(up_path)
+
             if self.is_cancelled: return
             self.clear()
 

@@ -1,6 +1,9 @@
 FROM anasty17/mltb:latest
 
 WORKDIR /usr/src/app
+
+RUN apt-get update && apt-get install -y mkvtoolnix unrar p7zip-full ffmpeg && rm -rf /var/lib/apt/lists/*
+
 RUN chmod 777 /usr/src/app
 
 RUN python3 -m venv mltbenv
