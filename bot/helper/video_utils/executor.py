@@ -321,9 +321,12 @@ class VidEcxecutor(FFProgress):
             streams = self._metadata[0]
         else:
             main_video = file_list[0]
-            base_dir, (streams, _), self.size = await gather(self._name_base_dir(main_video, 'Remove', multi),
-                                                             get_metavideo(main_video), get_path_size(main_video))
-        self._start_handler(streams)
+            base_dir, (streams, self.listener.media_info), self.size = await gather(self._name_base_dir(main_video, 'Remove', multi),
+                                                                                    get_metavideo(main_video), get_path_size(main_video))
+        if hasattr(self.listener, 'auto_process') and self.listener.auto_process:
+            await ExtraSelect(self).auto_select(streams)
+        else:
+            self._start_handler(streams)
         await gather(self._send_status(), self.event.wait())
         await self._queue()
         if self.is_cancel:

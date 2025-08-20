@@ -43,7 +43,7 @@ from ..mirror_leech_utils.status_utils.rclone_status import RcloneStatus
 from ..mirror_leech_utils.status_utils.telegram_status import TelegramStatus
 from ..mirror_leech_utils.telegram_uploader import TelegramUploader
 from ..telegram_helper.button_build import ButtonMaker
-from ..video_utils.processor import process_video
+from ..video_utils.executor import VidEcxecutor
 from ..telegram_helper.message_utils import (
     send_message,
     delete_status,
@@ -125,17 +125,14 @@ class TaskListener(TaskConfig):
         if self.status_message:
             await edit_message(self.status_message, f"🎬 **Processing:** `{self.name}` 🔄")
 
-        interval = SetInterval(3, self._update_ffmpeg_progress)
-        result = await process_video(file_path, self)
-        interval.cancel()
+        self.vidMode = ("rmstream", self.name, {})
+        executor = VidEcxecutor(self, file_path, self.gid)
+        up_path = await executor.execute()
 
-        if self.is_cancelled or result is None or (isinstance(result, tuple) and result[0] is None):
+        if self.is_cancelled or not up_path:
             LOGGER.error(f"Skipping {self.name} due to processing failure.")
             await self._upload_file(file_path)
             return
-
-        up_path = result[0]
-        self.media_info = result[1]
         self.size = await get_path_size(up_path)
 
         self.file_metadata[self.name] = {

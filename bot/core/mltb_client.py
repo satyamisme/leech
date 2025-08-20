@@ -1,5 +1,6 @@
 from pyrogram import Client, enums
 from asyncio import Lock
+from os import getcwd
 
 from .. import LOGGER
 from .config_manager import Config
@@ -24,7 +25,7 @@ class TgClient:
             Config.TELEGRAM_HASH,
             proxy=Config.TG_PROXY,
             bot_token=Config.BOT_TOKEN,
-            workdir="/usr/src/app",
+            workdir=getcwd(),
             parse_mode=enums.ParseMode.HTML,
             max_concurrent_transmissions=10,
         )
