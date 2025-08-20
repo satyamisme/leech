@@ -77,8 +77,6 @@ class Mirror(TaskListener):
         input_list = text[0].split(" ")
 
         args = {
-            "-a": False,
-            "-as": False,
             "-doc": False,
             "-med": False,
             "-d": False,
@@ -138,10 +136,6 @@ class Mirror(TaskListener):
         self.thumbnail_layout = args["-tl"]
         self.as_doc = args["-doc"]
         self.as_med = args["-med"]
-        self.auto_merge = args["-a"]
-        self.auto_split = args["-as"]
-        if self.auto_merge or self.auto_split:
-            self.auto_process = True
         self.folder_name = f"/{args["-m"]}".rstrip("/") if len(args["-m"]) > 0 else ""
         self.bot_trans = args["-bt"]
         self.user_trans = args["-ut"]

@@ -170,4 +170,3 @@ async def process_video(path, listener):
         return final_path, media_info
 
     return None, None
-
