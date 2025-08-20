@@ -72,7 +72,6 @@ class Mirror(TaskListener):
         self.is_nzb = is_nzb
 
     async def new_event(self):
-        await self.on_task_created()
         text = self.message.text.split("\n")
         input_list = text[0].split(" ")
 
@@ -295,6 +294,8 @@ class Mirror(TaskListener):
             )
             await self.remove_from_same_dir()
             return
+
+        await self.on_task_created()
 
         if len(self.link) > 0:
             LOGGER.info(self.link)
