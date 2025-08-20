@@ -72,7 +72,7 @@ class TaskListener(TaskConfig):
         base_name = ospath.basename(file_path)
         cmd = ["split", "-b", "1900M", file_path, f"{base_name}.part"]
         try:
-            _, stderr, code = await cmd_exec(cmd, cwd=dir_path)
+            _, stderr, code = await cmd_exec(cmd)
             if code == 0:
                 if await aiopath.exists(file_path):
                     await remove(file_path)
@@ -184,7 +184,8 @@ class TaskListener(TaskConfig):
         dl_path = f"{self.dir}/{self.name}"
         up_path = dl_path
 
-        if self.extract:
+        from ..ext_utils.files_utils import is_archive
+        if self.extract or await sync_to_async(is_archive, up_path):
             up_path = await self.proceed_extract(up_path, gid)
             if self.is_cancelled: return
             self.name = ospath.basename(up_path)
