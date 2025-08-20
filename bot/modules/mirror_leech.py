@@ -74,6 +74,7 @@ class Mirror(TaskListener):
     async def new_event(self):
         text = self.message.text.split("\n")
         input_list = text[0].split(" ")
+
         args = {
             "-a": False,
             "-as": False,
@@ -110,18 +111,15 @@ class Mirror(TaskListener):
             "-tl": "",
             "-ff": set(),
         }
+
         arg_parser(input_list[1:], args)
 
-        # Extract args
-        self.auto_merge = args["-a"]
-        self.auto_split = args["-as"]
-        self.auto_process = self.auto_merge or self.auto_split
-        self.link = args["link"]
         self.select = args["-s"]
         self.seed = args["-d"]
         self.name = args["-n"]
         self.up_dest = args["-up"]
         self.rc_flags = args["-rcf"]
+        self.link = args["link"]
         self.compress = args["-z"]
         self.extract = args["-e"]
         self.join = args["-j"]
@@ -143,6 +141,9 @@ class Mirror(TaskListener):
         self.bot_trans = args["-bt"]
         self.user_trans = args["-ut"]
         self.ffmpeg_cmds = args["-ff"]
+        self.auto_merge = args["-a"]
+        self.auto_split = args["-as"]
+        self.auto_process = self.auto_merge or self.auto_split
 
         headers = args["-h"]
         if headers:
@@ -157,7 +158,6 @@ class Mirror(TaskListener):
         file_ = None
         session = ""
 
-        # Check for link (inline or reply)
         if not self.link and reply_to:
             if reply_to.text:
                 self.link = reply_to.text.strip().split("\n")[0]
