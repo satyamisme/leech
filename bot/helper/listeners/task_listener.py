@@ -182,69 +182,60 @@ class TaskListener(TaskConfig):
             return
 
         dl_path = f"{self.dir}/{self.name}"
-        up_path = dl_path
 
         from ..ext_utils.files_utils import is_archive
+        from ..ext_utils.mkvmerge_utils import split_video_if_needed
+        from aiofiles.os import rename as aiorename
+
+        up_path = dl_path
         if self.extract or await sync_to_async(is_archive, up_path):
             up_path = await self.proceed_extract(up_path, gid)
             if self.is_cancelled: return
-            self.name = ospath.basename(up_path)
 
-        if await aiopath.isdir(up_path):
-            # Process videos in directory
-            for f in natsorted(await listdir(up_path)):
-                file_path = ospath.join(up_path, f)
-                if not await aiopath.isfile(file_path):
-                    continue
-                if await is_video(file_path):
-                    LOGGER.info(f"Processing video from dir: {f}")
-                    interval = SetInterval(3, self._update_ffmpeg_progress)
-                    await process_video(file_path, self)
-                    interval.cancel()
+        self.name = ospath.basename(up_path)
+        LOGGER.info(f"Processing: {self.name}")
+
+        if self.is_leech and not self.compress:
+            if await aiopath.isdir(up_path):
+                for f in natsorted(await listdir(up_path)):
+                    file_path = ospath.join(up_path, f)
+                    if not await aiopath.isfile(file_path): continue
+
+                    if await is_video(file_path):
+                        result = await process_video(file_path, self)
+                        if self.is_cancelled: return
+                        if isinstance(result, tuple) and result[0]:
+                            processed_file, self.media_info = result
+                            if processed_file != file_path:
+                                await aiorename(processed_file, file_path)
+                        await split_video_if_needed(file_path)
+                    else:
+                        await self._split_large_file(file_path)
                     if self.is_cancelled: return
-            # For directories, we upload the whole folder, so up_path is correct
-        elif await aiopath.isfile(up_path) and await is_video(up_path):
-            # Process single video file
-            interval = SetInterval(3, self._update_ffmpeg_progress)
-            result = await process_video(up_path, self)
-            interval.cancel()
-            if self.is_cancelled: return
-            if isinstance(result, tuple) and result[0]:
-                up_path, self.media_info = result
-            elif isinstance(result, str):
-                up_path = result
-            self.name = ospath.basename(up_path)
+            elif await aiopath.isfile(up_path):
+                if await is_video(up_path):
+                    result = await process_video(up_path, self)
+                    if self.is_cancelled: return
+                    if isinstance(result, tuple) and result[0]:
+                        up_path, self.media_info = result
+                    elif isinstance(result, str):
+                        up_path = result
+                    self.name = ospath.basename(up_path)
+                    await split_video_if_needed(up_path)
+                else:
+                    up_path = await self._split_large_file(up_path)
 
         if self.join:
             await join_files(up_path)
-
         if self.name_sub:
             up_path = await self.substitute(up_path)
             self.name = ospath.basename(up_path)
-
         if self.compress:
             up_path = await self.proceed_compress(up_path, gid)
             if self.is_cancelled: return
             self.name = ospath.basename(up_path)
 
         if self.is_leech and not self.compress:
-            is_dir = await aiopath.isdir(up_path)
-            if is_dir:
-                # Split large non-video files in the directory
-                for f in natsorted(await listdir(up_path)):
-                    f_path = ospath.join(up_path, f)
-                    if await aiopath.isfile(f_path):
-                        if not await is_video(f_path):
-                            await self._split_large_file(f_path)
-                        else: # Mkvmerge split for videos
-                            await self.proceed_split(f_path, gid)
-            elif await aiopath.isfile(up_path):
-                if await is_video(up_path):
-                    await self.proceed_split(up_path, gid)
-                else: # large non-video file
-                    up_path = await self._split_large_file(up_path)
-
-            if self.is_cancelled: return
             self.clear()
 
         self.size = await get_path_size(up_path)
@@ -339,18 +330,15 @@ class TaskListener(TaskConfig):
 
         if stream_type == 'audio':
             layout = stream.get('channel_layout', 'N/A')
-
             bitrate_str = stream.get('bit_rate')
             if not bitrate_str:
                 bitrate_str = stream.get('tags', {}).get('BPS')
             if not bitrate_str:
                 bitrate_str = stream.get('tags', {}).get('bitrate')
-
             if bitrate_str and bitrate_str.isdigit():
                 bitrate = f"{int(bitrate_str) // 1000}kbps"
             else:
                 bitrate = 'N/A'
-
             return f"<code>{index}. {codec} {lang}, {layout}, {bitrate}</code>"
 
         if stream_type == 'subtitle':
@@ -358,86 +346,40 @@ class TaskListener(TaskConfig):
             return f"<code>{index}. {codec} {lang}, {default}</code>"
 
     async def _send_leech_completion_message(self, sent_message):
-        if not sent_message:
-            return
-
-        name = ""
-        if sent_message.document:
-            name = sent_message.document.file_name
-        elif sent_message.video:
-            name = sent_message.video.file_name
-
-        if not name:
-             LOGGER.error("Could not get file name from sent message.")
-             return
-
-        name = ospath.basename(name)
+        name = ospath.basename(sent_message.document.file_name if sent_message.document else sent_message.video.file_name)
         size = sent_message.document.file_size if sent_message.document else sent_message.video.file_size
-
-        # Extract base name (remove " - Part 01")
-        base_name = re.sub(r" - Part \d+", "", name)
-        base_name = f"{ospath.splitext(base_name)[0]}.mkv"
-
-        meta = self.file_metadata.get(base_name) or self.file_metadata.get(name)
-        if meta:
-            orig_name = meta.get('original', self.original_name)
-            streams_kept = meta.get('streams_kept', self.streams_kept)
-            streams_removed = meta.get('streams_removed', self.streams_removed)
-            media_info = meta.get('media_info', self.media_info)
-            total_size = meta.get('size', self.size)
-        else:
-            orig_name = self.original_name
-            streams_kept = self.streams_kept
-            streams_removed = self.streams_removed
-            media_info = self.media_info
-            total_size = self.size
-
         total_parts = self.total_parts
         current_part = self.current_part
-
-        msg = f"🎬 <code>{name}</code>"
-        msg += f"\n📁 Part {current_part} of {total_parts} | 📂 Total: {get_readable_file_size(total_size)}"
-
-        if media_info:
-            msg += f" | ⏱️ {get_readable_time(float(media_info['format']['duration']))}"
-            # Video info
-            video_stream = next((stream for stream in streams_kept if stream['codec_type'] == 'video'), None)
+        msg = f"🎬 <code>{self.name}</code>"
+        msg += f"\n📁 Part {current_part} of {total_parts} | 📂 Total: {get_readable_file_size(self.size)} | ⏱️ {get_readable_time(float(self.media_info['format']['duration']))}"
+        if self.media_info:
+            video_stream = next((stream for stream in self.streams_kept if stream['codec_type'] == 'video'), None)
             if video_stream:
                 msg += f"\n📊 {video_stream.get('height')}p • {video_stream.get('codec_name')} • "
-
-            # Audio info
-            audio_stream = next((stream for stream in streams_kept if stream['codec_type'] == 'audio'), None)
+            audio_stream = next((stream for stream in self.streams_kept if stream['codec_type'] == 'audio'), None)
             if audio_stream:
-                msg += f"{len(streams_kept)}A • {audio_stream.get('tags', {}).get('language', 'N/A').upper()} • Split"
-
+                msg += f"{len(self.streams_kept)}A • {audio_stream.get('tags', {}).get('language', 'N/A').upper()} • Split"
             msg += f"\n📡 Source: {self.tag}"
-            msg += f"\n\n📽️ <code>{orig_name}</code>"
+            msg += f"\n\n📽️ <code>{self.original_name}</code>"
             msg += f"\n📏 {get_readable_file_size(size)} | 📅 {datetime.fromtimestamp(time()).strftime('%d %b %Y')}"
-
-            # Streams Kept
             msg += "\n\n**Streams Kept:**"
-            video_streams_kept = [s for s in streams_kept if s['codec_type'] == 'video' and s.get('disposition', {}).get('attached_pic') == 0]
-            audio_streams_kept = [s for s in streams_kept if s['codec_type'] == 'audio']
-
+            video_streams_kept = [s for s in self.streams_kept if s['codec_type'] == 'video' and s.get('disposition', {}).get('attached_pic') == 0]
+            audio_streams_kept = [s for s in self.streams_kept if s['codec_type'] == 'audio']
             if video_streams_kept:
                 vid_info = self._format_stream_info(video_streams_kept[0], 'video')
                 msg += f"\n🎥 {vid_info}"
             for stream in audio_streams_kept:
                 msg += f"\n🔊 {self._format_stream_info(stream, 'audio')}"
-
-            # Streams Removed
-            if streams_removed:
+            if self.streams_removed:
                 msg += "\n\n**Streams Removed:**"
-                audio_removed = [s for s in streams_removed if s['codec_type'] == 'audio']
-                subs_removed = [s for s in streams_removed if s['codec_type'] == 'subtitle']
+                audio_removed = [s for s in self.streams_removed if s['codec_type'] == 'audio']
+                subs_removed = [s for s in self.streams_removed if s['codec_type'] == 'subtitle']
                 for stream in audio_removed:
                     msg += f"\n🚫 {self._format_stream_info(stream, 'audio')}"
                 for stream in subs_removed:
                     msg += f"\n🚫 {self._format_stream_info(stream, 'subtitle')}"
-
         else:
             msg = f"🎉 <b>Task Completed by {self.tag}</b>\n\n<b>Name:</b> <code>{name}</code>\n<b>Size:</b> {get_readable_file_size(size)}\n\n<b>cc:</b> {self.tag}"
-
         buttons = ButtonMaker()
         if sent_message.link:
             buttons.url_button("Download Link", sent_message.link)
