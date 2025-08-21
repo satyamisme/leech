@@ -17,7 +17,7 @@ from ... import (
     task_dict,
     task_dict_lock,
 )
-from ...core.config_manager import config_dict
+from ...core.config_manager import Config
 from ...core.torrent_manager import TorrentManager
 from ..ext_utils.bot_utils import (
     get_readable_file_size,
@@ -74,7 +74,7 @@ class TaskListener(TaskConfig):
     async def on_download_start(self):
         if (
             self.is_super_chat
-            and config_dict["INCOMPLETE_TASK_NOTIFIER"]
+            and Config.INCOMPLETE_TASK_NOTIFIER
             and self.app is not None
         ):
             await database.add_incomplete_task(
@@ -278,7 +278,7 @@ class TaskListener(TaskConfig):
     ):
         if (
             self.is_super_chat
-            and config_dict["INCOMPLETE_TASK_NOTIFIER"]
+            and Config.INCOMPLETE_TASK_NOTIFIER
             and self.app is not None
         ):
             await database.rm_complete_task(self.message.link)
@@ -330,7 +330,7 @@ class TaskListener(TaskConfig):
 
         if (
             self.is_super_chat
-            and config_dict["INCOMPLETE_TASK_NOTIFIER"]
+            and Config.INCOMPLETE_TASK_NOTIFIER
             and self.app is not None
         ):
             await database.rm_complete_task(self.message.link)
