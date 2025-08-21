@@ -13,6 +13,12 @@ from ... import (
     LOGGER,
 )
 from ...core.config_manager import Config
+# from ...core.config_manager import (
+#     Config,
+#     qbit_options,
+#     set_qbit_options,
+#     save_config,
+# )
 from ...core.torrent_manager import TorrentManager
 from ..ext_utils.bot_utils import new_task
 from ..ext_utils.files_utils import clean_unwanted
@@ -21,13 +27,19 @@ from ..ext_utils.task_manager import stop_duplicate_check
 from ..mirror_leech_utils.status_utils.qbit_status import QbittorrentStatus
 from ..telegram_helper.message_utils import update_status_message
 
+CLIENT = TorrentManager().qbittorrent
+
 
 async def _remove_torrent(hash_, tag):
-    await TorrentManager.qbittorrent.torrents.delete([hash_], True)
-    async with qb_listener_lock:
-        if tag in qb_torrents:
-            del qb_torrents[tag]
-    await TorrentManager.qbittorrent.torrents.delete_tags([tag])
+    try:
+        await CLIENT.torrents_delete(torrent_hashes=hash_, delete_files=True)
+    except Exception as e:
+        LOGGER.error(f"Failed to delete torrent: {e}")
+    finally:
+        async with qb_listener_lock:
+            if tag in qb_torrents:
+                del qb_torrents[tag]
+        await CLIENT.torrents_delete_tags(tags=tag)
 
 
 @new_task
@@ -36,7 +48,7 @@ async def _on_download_error(err, tor, button=None):
     ext_hash = tor.hash
     if task := await get_task_by_gid(ext_hash[:12]):
         await task.listener.on_download_error(err, button)
-    await TorrentManager.qbittorrent.torrents.stop([ext_hash])
+    await CLIENT.torrents_pause(torrent_hashes=ext_hash)
     await sleep(0.3)
     await _remove_torrent(ext_hash, tor.tags[0])
 
@@ -69,15 +81,17 @@ async def _on_download_complete(tor):
     tag = tor.tags[0]
     if task := await get_task_by_gid(ext_hash[:12]):
         if not task.listener.seed:
-            await TorrentManager.qbittorrent.torrents.stop([ext_hash])
+            await CLIENT.torrents_pause(torrent_hashes=ext_hash)
 
-        path = tor.content_path.rsplit("/", 1)[0]
-        task.listener.name = path.split('/')[-1]
+        task.listener.name = tor.content_path.rsplit("/", 1)[-1].rsplit(".!qB", 1)[0]
 
         if task.listener.select:
             await clean_unwanted(task.listener.dir)
-            res = await TorrentManager.qbittorrent.torrents.files(ext_hash)
-            for f in res:
+            try:
+                files = await CLIENT.torrents_files(torrent_hash=ext_hash)
+            except Exception as e:
+                LOGGER.error(f"Failed to get torrent files: {e}")
+            for f in files:
                 if f.priority == 0 and await aiopath.exists(f"{path}/{f.name}"):
                     try:
                         await remove(f"{path}/{f.name}")
@@ -111,12 +125,37 @@ async def _on_download_complete(tor):
         await _remove_torrent(ext_hash, tag)
 
 
+# async def _check_and_set_qbit_options():
+#     try:
+#         qbit_version = (await CLIENT.app_version()).split("v")[-1]
+#         if qbit_version >= "4.5.4":
+#             if qbit_options.get("max_checking_torrents") != -1:
+#                 qbit_options["max_checking_torrents"] = -1
+#                 await set_qbit_options(qbit_options)
+#                 save_config()
+#                 LOGGER.info(
+#                     "qBittorrent version is >= 4.5.4, max_checking_torrents has been set to -1."
+#                 )
+#         elif qbit_options.get("max_checking_torrents") != 1:
+#             qbit_options["max_checking_torrents"] = 1
+#             await set_qbit_options(qbit_options)
+#             save_config()
+#             LOGGER.info(
+#                 "qBittorrent version is < 4.5.4, max_checking_torrents has been set to 1."
+#             )
+#     except Exception as e:
+#         LOGGER.error(f"Failed to check/set qBittorrent options: {e}")
+
+
 @new_task
 async def _qb_listener():
+    # await _check_and_set_qbit_options()
     while True:
         async with qb_listener_lock:
             try:
-                torrents = await TorrentManager.qbittorrent.torrents.info()
+                torrents = await CLIENT.torrents_info(
+                    status_filter="completed", tag=Config.TORRENT_TAG
+                )
                 if len(torrents) == 0:
                     intervals["qb"] = ""
                     break
@@ -132,11 +171,9 @@ async def _qb_listener():
                             and time() - qb_torrents[tag]["start_time"]
                             >= Config.TORRENT_TIMEOUT
                         ):
-                            await _on_download_error("Dead Torrent!", tor_info)
+                            await _on_download_error("Torrent timed out!", tor_info)
                         else:
-                            await TorrentManager.qbittorrent.torrents.reannounce(
-                                [tor_info.hash]
-                            )
+                            await CLIENT.torrents_reannounce(torrent_hashes=tor_info.hash)
                     elif state == "downloading":
                         qb_torrents[tag]["stalled_time"] = time()
                         if not qb_torrents[tag]["stop_dup_check"]:
@@ -150,28 +187,22 @@ async def _qb_listener():
                             msg = f"Force recheck - Name: {tor_info.name} Hash: "
                             msg += f"{tor_info.hash} Downloaded Bytes: {tor_info.downloaded} "
                             msg += f"Size: {tor_info.size} Total Size: {tor_info.total_size}"
-                            LOGGER.warning(msg)
-                            await TorrentManager.qbittorrent.torrents.recheck(
-                                [tor_info.hash]
-                            )
+                            LOGGER.info(msg)
+                            await CLIENT.torrents_recheck(torrent_hashes=tor_info.hash)
                             qb_torrents[tag]["rechecked"] = True
                         elif (
                             Config.TORRENT_TIMEOUT
                             and time() - qb_torrents[tag]["stalled_time"]
                             >= Config.TORRENT_TIMEOUT
                         ):
-                            await _on_download_error("Dead Torrent!", tor_info)
+                            await _on_download_error("Torrent stalled!", tor_info)
                         else:
-                            await TorrentManager.qbittorrent.torrents.reannounce(
-                                [tor_info.hash]
-                            )
+                            await CLIENT.torrents_reannounce(torrent_hashes=tor_info.hash)
                     elif state == "missingFiles":
-                        await TorrentManager.qbittorrent.torrents.recheck(
-                            [tor_info.hash]
-                        )
+                        await CLIENT.torrents_recheck(torrent_hashes=tor_info.hash)
                     elif state == "error":
                         await _on_download_error(
-                            "No enough space for this torrent on device", tor_info
+                            f"qB Error: {tor_info.state_message}", tor_info
                         )
                     elif (
                         int(tor_info.completion_on.timestamp()) != -1
@@ -196,6 +227,8 @@ async def _qb_listener():
             except (ClientError, TimeoutError, Exception, AQError) as e:
                 LOGGER.error(str(e))
         await sleep(3)
+    async with qb_listener_lock:
+        intervals["qb"] = ""
 
 
 async def on_download_start(tag):
