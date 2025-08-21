@@ -65,21 +65,12 @@ async def _stop_duplicate(tor):
 
 @new_task
 async def _on_download_complete(tor):
-    ext_hash = tor.hash
-    tag = tor.tags[0]
+    ext_hash = tor.hashtag = tor.tags[0]
     if task := await get_task_by_gid(ext_hash[:12]):
-        if not task.listener.seed:
-            await TorrentManager.qbittorrent.torrents.stop([ext_hash])
         if task.listener.select:
             await clean_unwanted(task.listener.dir)
-            path = tor.content_path.rsplit("/", 1)[0]
-            res = await TorrentManager.qbittorrent.torrents.files(ext_hash)
-            for f in res:
-                if f.priority == 0 and await aiopath.exists(f"{path}/{f.name}"):
-                    try:
-                        await remove(f"{path}/{f.name}")
-                    except:
-                        pass
+        path = tor.content_path.rsplit("/", 1)[0]
+        task.listener.name = path.split('/')[-1]
         await task.listener.on_download_complete()
         if intervals["stopAll"]:
             return

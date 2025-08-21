@@ -201,10 +201,11 @@ async def create_recursive_symlink(source, destination):
 def get_mime_type(file_path):
     if ospath.islink(file_path):
         file_path = readlink(file_path)
+    if ospath.isdir(file_path):
+        return 'application/x-directory'
     mime = Magic(mime=True)
     mime_type = mime.from_file(file_path)
-    mime_type = mime_type or "text/plain"
-    return mime_type
+    return mime_type or "text/plain"
 
 
 async def remove_excluded_files(fpath, ee):
@@ -265,7 +266,7 @@ async def join_files(opath):
 
 
 async def split_file(f_path, split_size, listener):
-    out_path = f"{f_path}.part"
+    out_prefix = f"{f_path}.part."
     if listener.is_cancelled:
         return False
     listener.subproc = await create_subprocess_exec(
@@ -274,8 +275,7 @@ async def split_file(f_path, split_size, listener):
         "--suffix-length=2",
         f"--bytes={split_size}",
         f_path,
-        out_path,
-        ".split.mkv",
+        out_prefix,
         stderr=PIPE,
     )
     _, stderr = await listener.subproc.communicate()
@@ -294,8 +294,9 @@ async def split_file(f_path, split_size, listener):
     return True
 
 
-async def is_video(path: str):
-    """Check if a file is a video."""
+async def is_video(path):
+    if not await aiopath.isfile(path):
+        return False
     mime_type = await sync_to_async(get_mime_type, path)
     if mime_type.startswith("video"):
         return True
