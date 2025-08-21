@@ -15,7 +15,6 @@ from logging import (
 from sabnzbdapi import SabnzbdClient
 from time import time
 from os import cpu_count
-from .core.config_manager import config_dict
 
 getLogger("requests").setLevel(WARNING)
 getLogger("urllib3").setLevel(WARNING)
