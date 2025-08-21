@@ -1,13 +1,13 @@
 from os import path as ospath
 from os.path import basename, dirname
-from bot import LOGGER, config_dict
-from bot.helper.ext_utils.files_utils import get_path_size, is_video, clean_target, get_mime_type
+from bot import LOGGER
+from bot.helper.ext_utils.files_utils import get_path_size, is_video, clean_target, get_mime_type, clean_download
 from bot.helper.ext_utils.bot_utils import get_readable_file_size, get_readable_time, SetInterval, sync_to_async
 from bot.helper.mirror_leech_utils.status_utils.upload_status import UploadStatus
 from bot.helper.mirror_leech_utils.telegram_uploader import TelegramUploader
 from bot.helper.video_utils.processor import process_video
 from ..common import TaskConfig
-from ...core.config_manager import Config
+from ...core.config_manager import config_dict, Config
 from bot.helper.telegram_helper.message_utils import send_message, delete_message, edit_message
 from bot.helper.telegram_helper.button_build import ButtonMaker
 from html import escape
@@ -33,12 +33,12 @@ class TaskListener(TaskConfig):
         super().__init__()
         self.streams_kept = None
         self.streams_removed = None
-        self.media_info = None
+        self.media_info = {}
         self.status_message = None
         self.start_time = time()
         self.last_progress_text = None
-        self.total_parts = 0
-        self.current_part = 0
+        self.total_parts = 1
+        self.current_part = 1
 
     async def on_task_created(self):
         self.status_message = await send_message(self.message, "🎬 Analyzing Streams... ⏳")
@@ -71,20 +71,17 @@ class TaskListener(TaskConfig):
             await database.add_incomplete_task(self.message.chat.id, self.message.link, self.tag)
 
     async def on_download_complete(self):
-        await sleep(2)
         if self.is_cancelled:
             return
 
-        dl_path = f"{self.dir}/{self.name}"
-        up_path = dl_path
+        up_path = f"{self.dir}/{self.name}"
 
-        # Handle directories (torrents, extracted archives)
         if await aiopath.isdir(up_path):
             video_files = []
             async for root, _, files in aiopath.walk(up_path):
                 for f in files:
                     fp = ospath.join(root, f)
-                    if await is_video(fp) and not f.startswith('.'):
+                    if (await get_mime_type(fp)).startswith("video") and not f.startswith('.'):
                         video_files.append(fp)
             if not video_files:
                 await self.on_upload_error("No video files found in the downloaded folder.")
@@ -95,11 +92,9 @@ class TaskListener(TaskConfig):
                 await self._process_and_upload(video_file)
                 if self.is_cancelled:
                     return
-
         else:
             await self._process_and_upload(up_path)
 
-        # Final cleanup
         await clean_download(self.dir)
         if hasattr(self, 'up_dir') and self.up_dir and await aiopath.exists(self.up_dir):
             await clean_download(self.up_dir)
@@ -109,7 +104,7 @@ class TaskListener(TaskConfig):
     async def _process_and_upload(self, up_path):
         """Process video (if leech) and upload."""
         if self.is_leech and not self.compress:
-            processed_path = await process_video(up_path, self)
+            processed_path, self.media_info = await process_video(up_path, self)
             if not processed_path or self.is_cancelled:
                 return
             upload_path = processed_path
@@ -130,7 +125,6 @@ class TaskListener(TaskConfig):
 
         msg = ""
 
-        # Get file name and size
         if sent_message.document:
             name = sent_message.document.file_name
             size = sent_message.document.file_size
@@ -141,7 +135,6 @@ class TaskListener(TaskConfig):
             name = self.name
             size = self.size
 
-        # Build UI
         msg += f"🎬 <code>{escape(name)}</code>\n"
         msg += f"📁 Part {self.current_part} of {self.total_parts} | 📂 Total: {get_readable_file_size(size)} | ⏱️ {get_readable_time(time() - self.start_time)}\n\n"
 
@@ -173,7 +166,6 @@ class TaskListener(TaskConfig):
             msg += f"\n🔗 Files are now available in your chat."
             msg += f"\n⚡️ {self.tag}"
 
-        # Add download button
         buttons = ButtonMaker()
         if hasattr(sent_message, 'link') and sent_message.link:
             buttons.url_button("Download Link", sent_message.link)
@@ -184,10 +176,9 @@ class TaskListener(TaskConfig):
         except Exception as e:
             LOGGER.error(f"Failed to send completion message: {e}")
             if "BUTTON_URL_INVALID" in str(e):
-                await send_message(self.message, msg)  # Retry without button
+                await send_message(self.message, msg)
 
     async def on_upload_complete(self, link, files, folders, mime_type, rclone_path="", dir_id="", tg_sent_messages=None):
-        # For GDrive/RClone
         if self.is_super_chat and Config.INCOMPLETE_TASK_NOTIFIER and Config.DATABASE_URL:
             await database.rm_complete_task(self.message.link)
 
