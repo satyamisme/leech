@@ -70,9 +70,12 @@ async def _on_download_complete(tor):
     if task := await get_task_by_gid(ext_hash[:12]):
         if not task.listener.seed:
             await TorrentManager.qbittorrent.torrents.stop([ext_hash])
+
+        path = tor.content_path.rsplit("/", 1)[0]
+        task.listener.name = path.split('/')[-1]
+
         if task.listener.select:
             await clean_unwanted(task.listener.dir)
-            path = tor.content_path.rsplit("/", 1)[0]
             res = await TorrentManager.qbittorrent.torrents.files(ext_hash)
             for f in res:
                 if f.priority == 0 and await aiopath.exists(f"{path}/{f.name}"):

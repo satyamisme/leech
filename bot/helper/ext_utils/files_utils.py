@@ -1,5 +1,5 @@
 from aioshutil import rmtree as aiormtree, move
-from asyncio import create_subprocess_exec, sleep, wait_for
+from asyncio import create_subprocess_exec, sleep, wait_for, gather
 from asyncio.subprocess import PIPE
 from magic import Magic
 from os import walk, path as ospath, readlink
@@ -148,18 +148,18 @@ async def clean_unwanted(opath):
             await rmdir(dirpath)
 
 
-async def get_path_size(opath):
+async def get_path_size(path):
     total_size = 0
-    if await aiopath.isfile(opath):
-        if await aiopath.islink(opath):
-            opath = await aioreadlink(opath)
-        return await aiopath.getsize(opath)
-    for root, _, files in await sync_to_async(walk, opath):
+    if await aiopath.isfile(path):
+        if await aiopath.islink(path):
+            path = await aioreadlink(path)
+        return await aiopath.getsize(path)
+    async for root, _, files in aiopath.walk(path):
         for f in files:
-            abs_path = ospath.join(root, f)
-            if await aiopath.islink(abs_path):
-                abs_path = await aioreadlink(abs_path)
-            total_size += await aiopath.getsize(abs_path)
+            fp = ospath.join(root, f)
+            if await aiopath.islink(fp):
+                continue
+            total_size += await aiopath.getsize(fp)
     return total_size
 
 
@@ -199,12 +199,11 @@ async def create_recursive_symlink(source, destination):
 
 
 def get_mime_type(file_path):
-    if ospath.islink(file_path):
-        file_path = readlink(file_path)
     mime = Magic(mime=True)
+    if ospath.isdir(file_path):
+        return 'application/x-directory'
     mime_type = mime.from_file(file_path)
-    mime_type = mime_type or "text/plain"
-    return mime_type
+    return mime_type or 'application/octet-stream'
 
 
 async def remove_excluded_files(fpath, ee):
@@ -235,33 +234,31 @@ async def move_and_merge(source, destination, mid):
 
 
 async def join_files(opath):
+    """Use 7z to join split archives (.001, .part1.rar, etc.)"""
     files = await listdir(opath)
-    results = []
-    exists = False
-    for file_ in files:
-        if re_search(r"\.0+2$", file_) and await sync_to_async(
-            get_mime_type, f"{opath}/{file_}"
-        ) not in ["application/x-7z-compressed", "application/zip"]:
-            exists = True
-            final_name = file_.rsplit(".", 1)[0]
-            fpath = f"{opath}/{final_name}"
-            cmd = f'cat "{fpath}."* > "{fpath}"'
-            _, stderr, code = await cmd_exec(cmd, True)
-            if code != 0:
-                LOGGER.error(f"Failed to join {final_name}, stderr: {stderr}")
-                if await aiopath.isfile(fpath):
-                    await remove(fpath)
-            else:
-                results.append(final_name)
-
-    if not exists:
-        LOGGER.warning("No files to join!")
-    elif results:
-        LOGGER.info("Join Completed!")
-        for res in results:
-            for file_ in files:
-                if re_search(rf"{escape(res)}\.0[0-9]+$", file_):
-                    await remove(f"{opath}/{file_}")
+    first_part = None
+    for file in files:
+        if re_search(r'\.0*1$', file) or file.endswith('.part1.rar'):
+            first_part = ospath.join(opath, file)
+            break
+    if not first_part:
+        return
+    mime_type = await sync_to_async(get_mime_type, first_part)
+    if mime_type in ['application/x-7z-compressed', 'application/zip']:
+        cmd = ['7z', 'x', '-y', '-o' + opath, first_part]
+        _, stderr, code = await cmd_exec(cmd)
+        if code == 0:
+            LOGGER.info("Split archive joined successfully via 7z")
+            for f in files:
+                if re_search(r'\.\d+$|\.part\d+\.rar$', f):
+                    await remove(ospath.join(opath, f))
+        else:
+            LOGGER.error(f"7z join failed: {stderr}")
+    elif first_part.endswith('.rar'):
+        cmd = ['unrar', 'x', '-y', first_part, opath]
+        _, stderr, code = await cmd_exec(cmd)
+        if code != 0:
+            LOGGER.error(f"unrar failed: {stderr}")
 
 
 async def split_file(f_path, split_size, listener):
@@ -294,22 +291,18 @@ async def split_file(f_path, split_size, listener):
     return True
 
 
-async def is_video(path: str):
-    """Check if a file is a video."""
-    mime_type = await sync_to_async(get_mime_type, path)
-    if mime_type.startswith("video"):
+async def is_video(file_path):
+    if not await aiopath.isfile(file_path):
+        return False
+    mime_type = await sync_to_async(get_mime_type, file_path)
+    if mime_type.startswith('video'):
         return True
     try:
-        result = await cmd_exec(["ffprobe", "-hide_banner", "-loglevel", "error", "-print_format", "json", "-show_streams", path])
-        if result[0] and result[2] == 0:
-            fields = eval(result[0]).get("streams")
-            if fields is None:
-                return False
-            for stream in fields:
-                if stream.get("codec_type") == "video":
-                    return True
+        result = await cmd_exec(['ffprobe', '-v', 'error', '-show_entries', 'format=start_time,duration', '-of', 'csv=p=0', file_path])
+        if result[0]:
+            return True
     except:
-        return False
+        pass
     return False
 
 
