@@ -1,13 +1,14 @@
 from os import path as ospath
 from os.path import basename, dirname
 from bot import LOGGER
+from bot.core.config_manager import config_dict
 from bot.helper.ext_utils.files_utils import get_path_size, is_video, clean_target, get_mime_type, clean_download
 from bot.helper.ext_utils.bot_utils import get_readable_file_size, get_readable_time, SetInterval, sync_to_async
 from bot.helper.mirror_leech_utils.status_utils.upload_status import UploadStatus
 from bot.helper.mirror_leech_utils.telegram_uploader import TelegramUploader
 from bot.helper.video_utils.processor import process_video
 from ..common import TaskConfig
-from ...core.config_manager import config_dict, Config
+from ...core.config_manager import Config
 from bot.helper.telegram_helper.message_utils import send_message, delete_message, edit_message
 from bot.helper.telegram_helper.button_build import ButtonMaker
 from html import escape
