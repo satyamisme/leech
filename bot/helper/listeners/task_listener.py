@@ -119,7 +119,7 @@ class TaskListener(TaskConfig):
         # Step 1: Extract if it's a ZIP/RAR
         if self.extract and is_archive(up_path):
             LOGGER.info(f"Extracting archive: {up_path}")
-            up_path = await self.proceed_extract(up_path, self.gid)
+            up_path = await self.proceed_extract(up_path, self.mid)
             if not up_path or self.is_cancelled:
                 return
             # After extract, up_path is now a directory with extracted files
