@@ -42,7 +42,7 @@ async def run_ffmpeg(command, path, listener):
         LOGGER.error(f"ffmpeg exited with non-zero return code.")
         if listener.is_cancelled:
             return None
-        await listener.onUploadError(f"ffmpeg exited with non-zero return code.")
+        await listener.on_upload_error(f"ffmpeg exited with non-zero return code.")
         return None
 
 async def process_video(path, listener):
@@ -56,7 +56,7 @@ async def process_video(path, listener):
     listener.original_name = ospath.basename(path)
     media_info = await get_media_info(path)
     if not media_info or 'streams' not in media_info:
-        await listener.onUploadError("Could not get media info from the input file.")
+        await listener.on_upload_error("Could not get media info from the input file.")
         return None
 
     all_streams = media_info['streams']
