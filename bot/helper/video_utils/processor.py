@@ -117,25 +117,13 @@ async def process_video(path, listener):
 
     # Subtitle stream selection
     selected_subtitles = []
-    found_preferred_subtitle = False
-    for pref_lang in preferred_langs:
-        lang_subtitle_streams = [s for s in subtitle_streams_to_process if get_lang_code(s) == pref_lang]
-        if lang_subtitle_streams:
-            selected_subtitles = lang_subtitle_streams
-            found_preferred_subtitle = True
-            LOGGER.info("Found preferred subtitle language '%s', selecting %d stream(s).", pref_lang, len(lang_subtitle_streams))
-            break
 
-    if not found_preferred_subtitle:
-        LOGGER.info("No preferred subtitle language found, keeping all subtitle tracks.")
-        selected_subtitles = subtitle_streams_to_process
-
-    streams_to_keep_in_ffmpeg = main_video_streams + art_streams + selected_audio + selected_subtitles
-    LOGGER.info("Total streams to keep (before subtitle check): %d", len(streams_to_keep_in_ffmpeg))
+    streams_to_keep_in_ffmpeg = main_video_streams + art_streams + selected_audio
+    LOGGER.info("Total streams to keep: %d", len(streams_to_keep_in_ffmpeg))
 
     if len(streams_to_keep_in_ffmpeg) == len(all_streams):
          LOGGER.info("No streams to remove, skipping processing.")
-         listener.streams_kept = main_video_streams + selected_audio + selected_subtitles
+         listener.streams_kept = main_video_streams + selected_audio
          kept_indices = {s['index'] for s in streams_to_keep_in_ffmpeg}
          listener.streams_removed = [s for s in all_streams if s['index'] not in kept_indices]
          listener.art_streams = art_streams

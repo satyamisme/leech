@@ -251,25 +251,3 @@ def loop_thread(func):
         return future.result() if wait else future
 
     return wrapper
-
-
-def get_readable_file_size(size_in_bytes: int) -> str:
-    if size_in_bytes == 0:
-        return "0B"
-    size_name = ("B", "KB", "MB", "GB", "TB")
-    index = 0
-    size = float(size_in_bytes)
-    while size >= 1024.0 and index < len(size_name) - 1:
-        size /= 1024.0
-        index += 1
-    return f"{size:.2f}{size_name[index]}"
-
-
-def get_readable_time(seconds: int) -> str:
-    periods = [('d', 86400), ('h', 3600), ('m', 60), ('s', 1)]
-    result = []
-    for period_name, period_seconds in periods:
-        if seconds >= period_seconds:
-            period_value, seconds = divmod(seconds, period_seconds)
-            result.append(f"{int(period_value)}{period_name}")
-    return "".join(result) if result else "0s"

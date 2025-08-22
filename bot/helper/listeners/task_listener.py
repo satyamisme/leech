@@ -31,6 +31,7 @@ from ..ext_utils.files_utils import (
     remove_excluded_files,
     move_and_merge,
     is_video,
+    is_archive,
 )
 from ..ext_utils.links_utils import is_gdrive_id
 from ..ext_utils.status_utils import get_readable_file_size
@@ -154,18 +155,21 @@ class TaskListener(TaskConfig):
         if self.up_dir:
             await clean_download(self.up_dir)
 
-    async def _process_single_video(self, video_path):
-        """Process a single video file with stream selection."""
+    async def _process_single_video(self, up_path):
         if self.is_leech and not self.compress:
-            processed_path = await process_video(video_path, self)
-            if not processed_path or self.is_cancelled:
+            result = await process_video(up_path, self)
+            if not result or self.is_cancelled:
                 return
+            processed_path, media_info = result
             upload_path = processed_path
+            self.media_info = media_info
+            self.streams_kept = media_info.get("streams_kept", [])
+            self.streams_removed = media_info.get("streams_removed", [])
         else:
-            upload_path = video_path
+            upload_path = up_path
 
-        # Upload
-        tg_uploader = TelegramUploader(upload_path, self)
+        # ✅ Correct order: listener first, then path
+        tg_uploader = TelegramUploader(self, upload_path)
         async for sent_message in tg_uploader.upload():
             if self.is_cancelled:
                 return
