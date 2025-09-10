@@ -113,13 +113,15 @@ class TaskListener(TaskConfig):
         if self.is_cancelled:
             return
 
+        gid = getattr(self, "gid", self.mid)
+
         dl_path = f"{self.dir}/{self.name}"
         up_path = dl_path
 
         # Step 1: Extract if it's a ZIP/RAR
         if self.extract and is_archive(up_path):
             LOGGER.info(f"Extracting archive: {up_path}")
-            up_path = await self.proceed_extract(up_path, self.gid)
+            up_path = await self.proceed_extract(up_path, gid)
             if not up_path or self.is_cancelled:
                 return
             # After extract, up_path is now a directory with extracted files
