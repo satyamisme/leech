@@ -249,12 +249,13 @@ async def edit_variable(_, message, pre_message, key):
             await database.trunc_table("tasks")
     elif key == "STATUS_UPDATE_INTERVAL":
         value = int(value)
-        if len(task_dict) != 0 and (st := intervals["status"]):
-            for cid, intvl in list(st.items()):
-                intvl.cancel()
-                intervals["status"][cid] = SetInterval(
-                    value, update_status_message, cid
-                )
+        async with task_dict_lock:
+            if len(task_dict) != 0 and (st := intervals["status"]):
+                for cid, intvl in list(st.items()):
+                    intvl.cancel()
+                    intervals["status"][cid] = SetInterval(
+                        value, update_status_message, cid
+                    )
     elif key == "TORRENT_TIMEOUT":
         await TorrentManager.change_aria2_option("bt-stop-timeout", value)
         value = int(value)
@@ -574,16 +575,14 @@ async def edit_bot_settings(client, query):
         value = ""
         if data[2] in DEFAULT_VALUES:
             value = DEFAULT_VALUES[data[2]]
-            if (
-                data[2] == "STATUS_UPDATE_INTERVAL"
-                and len(task_dict) != 0
-                and (st := intervals["status"])
-            ):
-                for key, intvl in list(st.items()):
-                    intvl.cancel()
-                    intervals["status"][key] = SetInterval(
-                        value, update_status_message, key
-                    )
+            if data[2] == "STATUS_UPDATE_INTERVAL":
+                async with task_dict_lock:
+                    if len(task_dict) != 0 and (st := intervals["status"]):
+                        for key, intvl in list(st.items()):
+                            intvl.cancel()
+                            intervals["status"][key] = SetInterval(
+                                value, update_status_message, key
+                            )
         elif data[2] == "EXCLUDED_EXTENSIONS":
             excluded_extensions.clear()
             excluded_extensions.extend(["aria2", "!qB"])
