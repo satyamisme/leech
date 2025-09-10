@@ -84,19 +84,19 @@ async def _on_download_complete(tor):
                 else:
                     removed = True
             if removed:
-                await _remove_torrent(ext_hash, tag)
+                await _remove_torrent(tor.hash, ext_hash)
                 return
             async with qb_listener_lock:
-                if tag in qb_torrents:
-                    qb_torrents[tag]["seeding"] = True
+                if ext_hash in qb_torrents:
+                    qb_torrents[ext_hash]["seeding"] = True
                 else:
                     return
             await update_status_message(task.listener.message.chat.id)
             LOGGER.info(f"Seeding started: {tor.name} - Hash: {ext_hash}")
         else:
-            await _remove_torrent(ext_hash, tag)
+            await _remove_torrent(tor.hash, ext_hash)
     else:
-        await _remove_torrent(ext_hash, tag)
+        await _remove_torrent(tor.hash, ext_hash)
 
 
 @new_task
