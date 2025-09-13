@@ -72,22 +72,22 @@ async def get_specific_tasks(status, user_id):
             if user_id
             else list(task_dict.values())
         )
-    coro_tasks = []
-    coro_tasks.extend(tk for tk in tasks_to_check if iscoroutinefunction(tk.status))
-    coro_statuses = await gather(*[tk.status() for tk in coro_tasks])
-    result = []
-    coro_index = 0
-    for tk in tasks_to_check:
-        if tk in coro_tasks:
-            st = coro_statuses[coro_index]
-            coro_index += 1
-        else:
-            st = tk.status()
-        if (st == status) or (
-            status == MirrorStatus.STATUS_DOWNLOAD and st not in STATUSES.values()
-        ):
-            result.append(tk)
-    return result
+        coro_tasks = []
+        coro_tasks.extend(tk for tk in tasks_to_check if iscoroutinefunction(tk.status))
+        coro_statuses = await gather(*[tk.status() for tk in coro_tasks])
+        result = []
+        coro_index = 0
+        for tk in tasks_to_check:
+            if tk in coro_tasks:
+                st = coro_statuses[coro_index]
+                coro_index += 1
+            else:
+                st = tk.status()
+            if (st == status) or (
+                status == MirrorStatus.STATUS_DOWNLOAD and st not in STATUSES.values()
+            ):
+                result.append(tk)
+        return result
 
 
 async def get_all_tasks(req_status: str, user_id):
