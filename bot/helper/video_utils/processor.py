@@ -51,13 +51,13 @@ async def process_video(path, listener):
 
     if hasattr(listener, 'streams_kept') and listener.streams_kept:
         LOGGER.info("Streams already processed by manual selection, skipping automatic processing.")
-        return path
+        return path, None
 
     listener.original_name = ospath.basename(path)
     media_info = await get_media_info(path)
     if not media_info or 'streams' not in media_info:
         await listener.on_upload_error("Could not get media info from the input file.")
-        return None
+        return None, None
 
     all_streams = media_info['streams']
     LOGGER.info("Found %d streams in the media file.", len(all_streams))
@@ -127,7 +127,7 @@ async def process_video(path, listener):
          kept_indices = {s['index'] for s in streams_to_keep_in_ffmpeg}
          listener.streams_removed = [s for s in all_streams if s['index'] not in kept_indices]
          listener.art_streams = art_streams
-         return path
+         return path, media_info
 
     cmd = ['ffmpeg', '-i', path, '-v', 'error']
     for stream in streams_to_keep_in_ffmpeg:

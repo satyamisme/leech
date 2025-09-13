@@ -264,7 +264,10 @@ async def edit_variable(_, message, pre_message, key):
     elif key == "BASE_URL_PORT":
         value = int(value)
         if Config.BASE_URL:
-            await (await create_subprocess_exec("pkill", "-9", "-f", "gunicorn")).wait()
+            try:
+                await (await create_subprocess_exec("pkill", "-9", "-f", "gunicorn")).wait()
+            except FileNotFoundError:
+                pass
             await create_subprocess_shell(
                 f"gunicorn -k uvicorn.workers.UvicornWorker -w 1 web.wserver:app --bind 0.0.0.0:{value}"
             )
@@ -300,14 +303,38 @@ async def edit_variable(_, message, pre_message, key):
         sudo_users.clear()
         aid = value.split()
         for id_ in aid:
-            sudo_users.append(int(id_.strip()))
+            try:
+                sudo_users.append(int(id_.strip()))
+            except ValueError:
+                await sendMessage(message, f"Invalid value for SUDO_USERS: {id_}. Should be an integer.")
+                return
     elif value.isdigit():
-        value = int(value)
+        try:
+            value = int(value)
+        except ValueError:
+            await sendMessage(message, f"Invalid value for {key}: {value}. Expected an integer.")
+            return
     elif value.startswith("[") and value.endswith("]"):
-        value = eval(value)
+        try:
+            value = literal_eval(value)
+            if not isinstance(value, list):
+                raise ValueError
+        except (ValueError, SyntaxError):
+            await sendMessage(message, f"Invalid list format for {key}: {value}")
+            return
     elif value.startswith("{") and value.endswith("}"):
-        value = eval(value)
-    Config.set(key, value)
+        try:
+            value = literal_eval(value)
+            if not isinstance(value, dict):
+                raise ValueError
+        except (ValueError, SyntaxError):
+            await sendMessage(message, f"Invalid dictionary format for {key}: {value}")
+            return
+    try:
+        Config.set(key, value)
+    except (TypeError, ValueError) as e:
+        await sendMessage(message, f"Error setting {key}: {e}")
+        return
     await update_buttons(pre_message, "var")
     await delete_message(message)
     await database.update_config({key: value})
@@ -451,9 +478,12 @@ async def update_private_file(_, message, pre_message):
             Config.USE_SERVICE_ACCOUNTS = False
             await database.update_config({"USE_SERVICE_ACCOUNTS": False})
         elif file_name in [".netrc", "netrc"]:
-            await (await create_subprocess_exec("touch", ".netrc")).wait()
-            await (await create_subprocess_exec("chmod", "600", ".netrc")).wait()
-            await (await create_subprocess_exec("cp", ".netrc", "/root/.netrc")).wait()
+            try:
+                await (await create_subprocess_exec("touch", ".netrc")).wait()
+                await (await create_subprocess_exec("chmod", "600", ".netrc")).wait()
+                await (await create_subprocess_exec("cp", ".netrc", "/root/.netrc")).wait()
+            except FileNotFoundError:
+                LOGGER.error("touch, chmod, or cp command not found.")
         await delete_message(message)
     elif doc := message.document:
         file_name = doc.file_name
@@ -466,14 +496,17 @@ async def update_private_file(_, message, pre_message):
                 await rmtree("accounts", ignore_errors=True)
             if await aiopath.exists("rclone_sa"):
                 await rmtree("rclone_sa", ignore_errors=True)
-            await (
-                await create_subprocess_exec(
-                    "7z", "x", "-o.", "-aoa", "accounts.zip", "accounts/*.json"
-                )
-            ).wait()
-            await (
-                await create_subprocess_exec("chmod", "-R", "777", "accounts")
-            ).wait()
+            try:
+                await (
+                    await create_subprocess_exec(
+                        "7z", "x", "-o.", "-aoa", "accounts.zip", "accounts/*.json"
+                    )
+                ).wait()
+                await (
+                    await create_subprocess_exec("chmod", "-R", "777", "accounts")
+                ).wait()
+            except FileNotFoundError:
+                LOGGER.error("7z or chmod command not found.")
         elif file_name == "list_drives.txt":
             drives_ids.clear()
             drives_names.clear()
@@ -496,8 +529,11 @@ async def update_private_file(_, message, pre_message):
             if file_name == "netrc":
                 await rename("netrc", ".netrc")
                 file_name = ".netrc"
-            await (await create_subprocess_exec("chmod", "600", ".netrc")).wait()
-            await (await create_subprocess_exec("cp", ".netrc", "/root/.netrc")).wait()
+            try:
+                await (await create_subprocess_exec("chmod", "600", ".netrc")).wait()
+                await (await create_subprocess_exec("cp", ".netrc", "/root/.netrc")).wait()
+            except FileNotFoundError:
+                LOGGER.error("chmod or cp command not found.")
         elif file_name == "config.py":
             await load_config()
         if "@github.com" in Config.UPSTREAM_REPO:
@@ -590,13 +626,19 @@ async def edit_bot_settings(client, query):
             await TorrentManager.change_aria2_option("bt-stop-timeout", "0")
             await database.update_aria2("bt-stop-timeout", "0")
         elif data[2] == "BASE_URL":
-            await (await create_subprocess_exec("pkill", "-9", "-f", "gunicorn")).wait()
+            try:
+                await (await create_subprocess_exec("pkill", "-9", "-f", "gunicorn")).wait()
+            except FileNotFoundError:
+                pass
         elif data[2] == "BASE_URL_PORT":
             value = 80
             if Config.BASE_URL:
-                await (
-                    await create_subprocess_exec("pkill", "-9", "-f", "gunicorn")
-                ).wait()
+                try:
+                    await (
+                        await create_subprocess_exec("pkill", "-9", "-f", "gunicorn")
+                    ).wait()
+                except FileNotFoundError:
+                    pass
                 await create_subprocess_shell(
                     f"gunicorn -k uvicorn.workers.UvicornWorker -w 1 web.wserver:app --bind 0.0.0.0:{value}"
                 )
@@ -611,7 +653,10 @@ async def edit_bot_settings(client, query):
         elif data[2] == "INCOMPLETE_TASK_NOTIFIER":
             await database.trunc_table("tasks")
         elif data[2] in ["JD_EMAIL", "JD_PASS"]:
-            await create_subprocess_exec("pkill", "-9", "-f", "java")
+            try:
+                await create_subprocess_exec("pkill", "-9", "-f", "java")
+            except FileNotFoundError:
+                LOGGER.error("pkill command not found.")
         elif data[2] == "USENET_SERVERS":
             for s in Config.USENET_SERVERS:
                 await sabnzbd_client.delete_config("servers", s["name"])
