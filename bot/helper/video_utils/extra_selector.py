@@ -183,24 +183,26 @@ class ExtraSelect:
         text = ''
         index = 1
         if not self.status:
-            for possition, file in self.executor.data['list'].items():
+            for possition, file in self.executor.data.get('list', {}).items():
                 if file.endswith(('srt', '.ass')):
-                    ref_file = self.executor.data['final'].get(possition, {}).get('ref', '')
+                    ref_file = self.executor.data.get('final', {}).get(possition, {}).get('ref', '')
                     text += f'{index}. {file} {"✅ " if ref_file else ""}\n'
                     but_txt = f'✅ {index}' if ref_file else index
                     buttons.button_data(but_txt, f'extra subsync {possition}')
                     index += 1
             buttons.button_data('Cancel', 'extra cancel', 'footer')
-            if self.executor.data['final']:
+            if self.executor.data.get('final'):
                 buttons.button_data('Continue', 'extra subsync continue', 'footer')
         else:
-            file: dict = self.executor.data['list'][self.status]
-            text = (f'Current: <b>{file}</b>\n'
-                    f'References: <b>{ref}</b>\n' if (ref := self.executor.data['final'].get(self.status, {}).get('ref')) else ''
-                    '\nSelect Available References Below!\n')
-            self.executor.data['final'][self.status] = {'file': file}
-            for possition, file in self.executor.data['list'].items():
-                if possition != self.status and file not in self.executor.data['final'].values():
+            file: dict = self.executor.data.get('list', {}).get(self.status)
+            text = f'Current: <b>{file}</b>\n'
+            ref = self.executor.data.get('final', {}).get(self.status, {}).get('ref')
+            if ref:
+                text += f'References: <b>{ref}</b>\n'
+            text += '\nSelect Available References Below!\n'
+            self.executor.data.setdefault('final', {})[self.status] = {'file': file}
+            for possition, file in self.executor.data.get('list', {}).items():
+                if possition != self.status and file not in self.executor.data.get('final', {}).values():
                     text += f'{index}. {file}\n'
                     buttons.button_data(index, f'extra subsync select {possition}')
                     index += 1
@@ -242,6 +244,9 @@ class ExtraSelect:
 
 async def cb_extra(_, query: CallbackQuery, obj: ExtraSelect):
     data = query.data.split()
+    if len(data) < 2:
+        await query.answer()
+        return
     match data[1]:
         case 'cancel':
             await query.answer()
@@ -335,3 +340,5 @@ async def cb_extra(_, query: CallbackQuery, obj: ExtraSelect):
                 obj.executor.data.update({'key': int(value) if value.isdigit() else data[2:],
                                           'extension': obj.extension})
                 obj.event.set()
+        case _:
+            await query.answer()

@@ -14,7 +14,6 @@ from time import time
 from bot import config_dict, VID_MODE
 from bot.helper.ext_utils.bot_utils import new_task, new_thread, sync_to_async
 from bot.helper.ext_utils.files_utils import clean_target
-from bot.helper.ext_utils.links_utils import is_media
 from bot.helper.ext_utils.status_utils import get_readable_time
 from bot.helper.listeners import tasks_listener as task
 from bot.helper.telegram_helper.button_build import ButtonMaker
@@ -209,23 +208,36 @@ class SelectMode():
 
 async def message_handler(_, message: Message, obj: SelectMode, is_sub=False):
     data = None
+    if not message.text and not message.media:
+        await sendMessage('Send a valid message!', message)
+        return
+
     if obj.is_rename and message.text:
         obj.newname = message.text.strip().replace('/', '')
         obj.is_rename = False
-    elif obj.mode == 'watermark' and (media := is_media(message)):
+    elif obj.mode == 'watermark' and message.media:
+        media = message.document or message.photo
         if is_sub:
-            if message.document and not media.file_name.lower().endswith(('.ass', '.srt')):
-                await sendMessage('Only .ass or .srt allowed!', message)
+            if not message.document or not media.file_name.lower().endswith(('.ass', '.srt')):
+                await sendMessage('Only .ass or .srt documents allowed!', message)
                 return
-            obj.extra_data['subfile'] = await message.download(ospath.join('watermark', media.file_id))
+            try:
+                obj.extra_data['subfile'] = await message.download(ospath.join('watermark', media.file_id))
+            except Exception as e:
+                await sendMessage(f'Error downloading subtitle: {e}', message)
+                return
         else:
             if message.document and 'image' not in getattr(media, 'mime_type', 'None'):
-                await sendMessage('Only image document allowed!', message)
+                await sendMessage('Only image documents allowed!', message)
                 return
-            fpath = await message.download(ospath.join('watermark', media.file_id))
-            await sync_to_async(Image.open(fpath).convert('RGBA').save, ospath.join('watermark', f'{obj.listener.mid}.png'), 'PNG')
-            await clean_target(fpath)
-            data = 'wmsize'
+            try:
+                fpath = await message.download(ospath.join('watermark', media.file_id))
+                await sync_to_async(Image.open(fpath).convert('RGBA').save, ospath.join('watermark', f'{obj.listener.mid}.png'), 'PNG')
+                await clean_target(fpath)
+                data = 'wmsize'
+            except Exception as e:
+                await sendMessage(f'Error handling watermark image: {e}', message)
+                return
     elif obj.mode == 'trim' and message.text:
         if match := re_match(r'(\d{2}:\d{2}:\d{2})\s(\d{2}:\d{2}:\d{2})', message.text.strip()):
             obj.extra_data.update({'start_time': match.group(1), 'end_time': match.group(2)})
