@@ -247,23 +247,25 @@ async def edit_variable(_, message, pre_message, key):
         value = False
         if key == "INCOMPLETE_TASK_NOTIFIER" and Config.DATABASE_URL:
             await database.trunc_table("tasks")
-    elif key == "STATUS_UPDATE_INTERVAL":
-        value = int(value)
-        async with task_dict_lock:
-            if len(task_dict) != 0 and (st := intervals["status"]):
-                for cid, intvl in list(st.items()):
-                    intvl.cancel()
-                    intervals["status"][cid] = SetInterval(
-                        value, update_status_message, cid
-                    )
-    elif key == "TORRENT_TIMEOUT":
-        await TorrentManager.change_aria2_option("bt-stop-timeout", value)
-        value = int(value)
-    elif key == "LEECH_SPLIT_SIZE":
-        value = min(int(value), TgClient.MAX_SPLIT_SIZE)
-    elif key == "BASE_URL_PORT":
-        value = int(value)
-        if Config.BASE_URL:
+    elif key in ("STATUS_UPDATE_INTERVAL", "TORRENT_TIMEOUT", "LEECH_SPLIT_SIZE", "BASE_URL_PORT"):
+        try:
+            value = int(value)
+        except ValueError:
+            await send_message(message, f"Invalid integer value: {value}")
+            return
+        if key == "STATUS_UPDATE_INTERVAL":
+            async with task_dict_lock:
+                if len(task_dict) != 0 and (st := intervals["status"]):
+                    for cid, intvl in list(st.items()):
+                        intvl.cancel()
+                        intervals["status"][cid] = SetInterval(
+                            value, update_status_message, cid
+                        )
+        elif key == "TORRENT_TIMEOUT":
+            await TorrentManager.change_aria2_option("bt-stop-timeout", f"{value}")
+        elif key == "LEECH_SPLIT_SIZE":
+            value = min(value, TgClient.MAX_SPLIT_SIZE)
+        elif key == "BASE_URL_PORT" and Config.BASE_URL:
             try:
                 await (await create_subprocess_exec("pkill", "-9", "-f", "gunicorn")).wait()
             except FileNotFoundError:
@@ -536,7 +538,7 @@ async def update_private_file(_, message, pre_message):
                 LOGGER.error("chmod or cp command not found.")
         elif file_name == "config.py":
             await load_config()
-        if "@github.com" in Config.UPSTREAM_REPO:
+        if Config.UPSTREAM_REPO and "@github.com" in Config.UPSTREAM_REPO:
             buttons = ButtonMaker()
             msg = "Push to UPSTREAM_REPO ?"
             buttons.data_button("Yes!", f"botset push {file_name}")
@@ -576,7 +578,11 @@ async def event_handler(client, query, pfunc, rfunc, document=False):
 
 @new_task
 async def edit_bot_settings(client, query):
+    if not query or not query.data:
+        return
     data = query.data.split()
+    if len(data) < 2:
+        return
     message = query.message
     handler_dict[message.chat.id] = False
     if data[1] == "close":
@@ -606,7 +612,7 @@ async def edit_bot_settings(client, query):
             globals()["start"] = 0
         await query.answer()
         await update_buttons(message, data[1])
-    elif data[1] == "resetvar":
+    elif data[1] == "resetvar" and len(data) == 3:
         await query.answer()
         value = ""
         if data[2] in DEFAULT_VALUES:
@@ -680,7 +686,7 @@ async def edit_bot_settings(client, query):
             "RCLONE_SERVE_PASS",
         ]:
             await rclone_serve_booter()
-    elif data[1] == "resetnzb":
+    elif data[1] == "resetnzb" and len(data) == 3:
         await query.answer()
         res = await sabnzbd_client.set_config_default(data[2])
         nzb_options[data[2]] = res["config"]["misc"][data[2]]
@@ -700,25 +706,25 @@ async def edit_bot_settings(client, query):
         qbit_options.clear()
         await update_qb_options()
         await database.save_qbit_settings()
-    elif data[1] == "emptyaria":
+    elif data[1] == "emptyaria" and len(data) == 3:
         await query.answer()
         aria2_options[data[2]] = ""
         await update_buttons(message, "aria")
         await TorrentManager.change_aria2_option(data[2], "")
         await database.update_aria2(data[2], "")
-    elif data[1] == "emptyqbit":
+    elif data[1] == "emptyqbit" and len(data) == 3:
         await query.answer()
         await TorrentManager.qbittorrent.app.set_preferences({data[2]: value})
         qbit_options[data[2]] = ""
         await update_buttons(message, "qbit")
         await database.update_qbittorrent(data[2], "")
-    elif data[1] == "emptynzb":
+    elif data[1] == "emptynzb" and len(data) == 3:
         await query.answer()
         res = await sabnzbd_client.set_config("misc", data[2], "")
         nzb_options[data[2]] = res["config"]["misc"][data[2]]
         await update_buttons(message, "nzb")
         await database.update_nzb_config()
-    elif data[1] == "remser":
+    elif data[1] == "remser" and len(data) == 3:
         index = int(data[2])
         await sabnzbd_client.delete_config(
             "servers", Config.USENET_SERVERS[index]["name"]
@@ -732,13 +738,13 @@ async def edit_bot_settings(client, query):
         pfunc = partial(update_private_file, pre_message=message)
         rfunc = partial(update_buttons, message)
         await event_handler(client, query, pfunc, rfunc, True)
-    elif data[1] == "botvar" and state == "edit":
+    elif data[1] == "botvar" and state == "edit" and len(data) == 3:
         await query.answer()
         await update_buttons(message, data[2], data[1])
         pfunc = partial(edit_variable, pre_message=message, key=data[2])
         rfunc = partial(update_buttons, message, "var")
         await event_handler(client, query, pfunc, rfunc)
-    elif data[1] == "botvar" and state == "view":
+    elif data[1] == "botvar" and state == "view" and len(data) == 3:
         value = f"{Config.get(data[2])}"
         if len(value) > 200:
             await query.answer()
@@ -749,13 +755,13 @@ async def edit_bot_settings(client, query):
         elif value == "":
             value = None
         await query.answer(f"{value}", show_alert=True)
-    elif data[1] == "ariavar" and (state == "edit" or data[2] == "newkey"):
+    elif data[1] == "ariavar" and len(data) == 3 and (state == "edit" or data[2] == "newkey"):
         await query.answer()
         await update_buttons(message, data[2], data[1])
         pfunc = partial(edit_aria, pre_message=message, key=data[2])
         rfunc = partial(update_buttons, message, "aria")
         await event_handler(client, query, pfunc, rfunc)
-    elif data[1] == "ariavar" and state == "view":
+    elif data[1] == "ariavar" and state == "view" and len(data) == 3:
         value = f"{aria2_options[data[2]]}"
         if len(value) > 200:
             await query.answer()
@@ -766,13 +772,13 @@ async def edit_bot_settings(client, query):
         elif value == "":
             value = None
         await query.answer(f"{value}", show_alert=True)
-    elif data[1] == "qbitvar" and state == "edit":
+    elif data[1] == "qbitvar" and state == "edit" and len(data) == 3:
         await query.answer()
         await update_buttons(message, data[2], data[1])
         pfunc = partial(edit_qbit, pre_message=message, key=data[2])
         rfunc = partial(update_buttons, message, "qbit")
         await event_handler(client, query, pfunc, rfunc)
-    elif data[1] == "qbitvar" and state == "view":
+    elif data[1] == "qbitvar" and state == "view" and len(data) == 3:
         value = f"{qbit_options[data[2]]}"
         if len(value) > 200:
             await query.answer()
@@ -783,13 +789,13 @@ async def edit_bot_settings(client, query):
         elif value == "":
             value = None
         await query.answer(f"{value}", show_alert=True)
-    elif data[1] == "nzbvar" and state == "edit":
+    elif data[1] == "nzbvar" and state == "edit" and len(data) == 3:
         await query.answer()
         await update_buttons(message, data[2], data[1])
         pfunc = partial(edit_nzb, pre_message=message, key=data[2])
         rfunc = partial(update_buttons, message, "nzb")
         await event_handler(client, query, pfunc, rfunc)
-    elif data[1] == "nzbvar" and state == "view":
+    elif data[1] == "nzbvar" and state == "view" and len(data) == 3:
         value = f"{nzb_options[data[2]]}"
         if len(value) > 200:
             await query.answer()
@@ -800,7 +806,7 @@ async def edit_bot_settings(client, query):
         elif value == "":
             value = None
         await query.answer(f"{value}", show_alert=True)
-    elif data[1] == "emptyserkey":
+    elif data[1] == "emptyserkey" and len(data) == 4:
         await query.answer()
         await update_buttons(message, f"nzbser{data[2]}")
         index = int(data[2])
@@ -809,7 +815,7 @@ async def edit_bot_settings(client, query):
         )
         Config.USENET_SERVERS[index][data[3]] = res["config"]["servers"][0][data[3]]
         await database.update_config({"USENET_SERVERS": Config.USENET_SERVERS})
-    elif data[1].startswith("nzbsevar") and (state == "edit" or data[2] == "newser"):
+    elif len(data) >= 3 and data[1].startswith("nzbsevar") and (state == "edit" or data[2] == "newser"):
         index = 0 if data[2] == "newser" else int(data[1].replace("nzbsevar", ""))
         await query.answer()
         await update_buttons(message, data[2], data[1])
@@ -820,7 +826,7 @@ async def edit_bot_settings(client, query):
             f"nzbser{index}" if data[2] != "newser" else "nzbserver",
         )
         await event_handler(client, query, pfunc, rfunc)
-    elif data[1].startswith("nzbsevar") and state == "view":
+    elif len(data) >= 3 and data[1].startswith("nzbsevar") and state == "view":
         index = int(data[1].replace("nzbsevar", ""))
         value = f"{Config.USENET_SERVERS[index][data[2]]}"
         if len(value) > 200:
@@ -832,20 +838,20 @@ async def edit_bot_settings(client, query):
         elif value == "":
             value = None
         await query.answer(f"{value}", show_alert=True)
-    elif data[1] == "edit":
+    elif data[1] == "edit" and len(data) == 3:
         await query.answer()
         globals()["state"] = "edit"
         await update_buttons(message, data[2])
-    elif data[1] == "view":
+    elif data[1] == "view" and len(data) == 3:
         await query.answer()
         globals()["state"] = "view"
         await update_buttons(message, data[2])
-    elif data[1] == "start":
+    elif data[1] == "start" and len(data) == 4:
         await query.answer()
         if start != int(data[3]):
             globals()["start"] = int(data[3])
             await update_buttons(message, data[2])
-    elif data[1] == "push":
+    elif data[1] == "push" and len(data) == 3:
         await query.answer()
         filename = data[2].rsplit(".zip", 1)[0]
         if await aiopath.exists(filename):

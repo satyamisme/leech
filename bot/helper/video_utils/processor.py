@@ -59,7 +59,7 @@ async def process_video(path, listener):
         await listener.on_upload_error("Could not get media info from the input file.")
         return None, None
 
-    all_streams = media_info['streams']
+    all_streams = [s for s in media_info.get('streams', []) if 'index' in s]
     LOGGER.info("Found %d streams in the media file.", len(all_streams))
 
     lang_map = {
@@ -135,7 +135,7 @@ async def process_video(path, listener):
 
     cmd.extend(['-c:v', 'copy', '-c:a', 'copy', '-c:s', 'copy', '-avoid_negative_ts', 'make_zero', '-fflags', '+genpts', '-max_interleave_delta', '0'])
 
-    base_name, _ = path.rsplit('.', 1)
+    base_name = ospath.splitext(path)[0]
     output_path = f"{base_name}.processed.mkv"
     cmd.extend(['-f', 'matroska', '-y', output_path])
 
