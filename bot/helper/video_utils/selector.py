@@ -250,7 +250,11 @@ async def message_handler(_, message: Message, obj: SelectMode, is_sub=False):
 
 @new_task
 async def cb_vidtools(_, query: CallbackQuery, obj: SelectMode):
+    if not query:
+        return
     data = query.data.split()
+    if len(data) < 2:
+        return
     if data[1] in config_dict['DISABLE_VIDTOOLS']:
         await query.answer(f'{VID_MODE[data[1]]} has been disabled!', True)
         return
@@ -297,8 +301,11 @@ async def cb_vidtools(_, query: CallbackQuery, obj: SelectMode):
             obj.extra_data['type'] = value
             await obj.list_buttons()
         case 'wmsize' | 'wmposition' as value:
-            obj.extra_data[value] = data[2]
-            await obj.list_buttons('wmposition' if value == 'wmsize' else None)
+            if len(data) == 3:
+                obj.extra_data[value] = data[2]
+                await obj.list_buttons('wmposition' if value == 'wmsize' else None)
+            else:
+                await obj.list_buttons(value)
         case value:
             if value == 'rename':
                 obj.is_rename = True
