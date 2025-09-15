@@ -113,15 +113,13 @@ class TaskListener(TaskConfig):
         if self.is_cancelled:
             return
 
-        gid = getattr(self, "gid", self.mid)
-
         dl_path = f"{self.dir}/{self.name}"
         up_path = dl_path
 
         # Step 1: Extract if it's a ZIP/RAR
         if self.extract and is_archive(up_path):
             LOGGER.info(f"Extracting archive: {up_path}")
-            up_path = await self.proceed_extract(up_path, gid)
+            up_path = await self.proceed_extract(up_path, self.gid)
             if not up_path or self.is_cancelled:
                 return
             # After extract, up_path is now a directory with extracted files
@@ -169,21 +167,8 @@ class TaskListener(TaskConfig):
             self.streams_removed = media_info.get("streams_removed", [])
         else:
             upload_path = up_path
-            gid = getattr(self, "gid", self.mid)
-            if is_gdrive_id(self.up_dest):
-                gdrive = GoogleDriveUpload(self)
-                async with task_dict_lock:
-                    task_dict[self.mid] = GoogleDriveStatus(self, gdrive, gid, "up")
-                await send_status_message(self.message)
-                await sync_to_async(gdrive.upload, upload_path)
-            else:
-                rclone = RcloneTransferHelper(self)
-                async with task_dict_lock:
-                    task_dict[self.mid] = RcloneStatus(self, rclone, gid, "up")
-                await send_status_message(self.message)
-                await rclone.upload(upload_path)
-            return
 
+        # ✅ Correct order: listener first, then path
         tg_uploader = TelegramUploader(self, upload_path)
         async for sent_message in tg_uploader.upload():
             if self.is_cancelled:

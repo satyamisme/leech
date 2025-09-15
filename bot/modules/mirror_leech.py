@@ -274,8 +274,13 @@ class Mirror(TaskListener):
                 file_.mime_type == "application/x-bittorrent"
                 or file_.file_name.endswith((".torrent", ".dlc", ".nzb"))
             ):
-                self.link = await reply_to.download()
-                file_ = None
+                try:
+                    self.link = await reply_to.download()
+                    file_ = None
+                except Exception as e:
+                    await send_message(self.message, f"ERROR: Failed to download torrent file: {e}")
+                    await self.remove_from_same_dir()
+                    return
 
         if (
             not self.link
