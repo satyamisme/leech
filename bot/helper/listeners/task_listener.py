@@ -1,4 +1,4 @@
-from aiofiles.os import path as aiopath, listdir, remove
+from aiofiles.os import path as aiopath, listdir, remove, makedirs
 from asyncio import sleep, gather
 from os import path as ospath
 from html import escape
@@ -68,6 +68,25 @@ class TaskListener(TaskConfig):
         self.status_message = None
         self.start_time = time()
         self.last_progress_text = None
+
+    async def before_start(self):
+        self.dir = f"{DOWNLOAD_DIR}{self.mid}"
+        self.up_dir = f"{self.dir}_up"
+        await makedirs(self.dir, exist_ok=True)
+        await makedirs(self.up_dir, exist_ok=True)
+        LOGGER.info(f"Created directories: {self.dir}, {self.up_dir}")
+
+    async def init_bulk(self, input_list, bulk_start, bulk_end, mirror):
+        pass
+
+    async def run_multi(self, input_list, mirror):
+        pass
+
+    async def get_tag(self, text):
+        pass
+
+    async def proceed_extract(self, path, gid):
+        pass
 
     async def on_task_created(self):
         self.status_message = await send_message(self.message, "🎬 Analyzing Streams... ⏳")

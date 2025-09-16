@@ -59,8 +59,8 @@ async def check_running_tasks(listener, state="dl"):
     state_limit = Config.QUEUE_DOWNLOAD if state == "dl" else Config.QUEUE_UPLOAD
     event = None
     is_over_limit = False
-    async with task_dict_lock:
-        async with queue_dict_lock:
+    async with queue_dict_lock:
+        async with task_dict_lock:
             if state == "up" and listener.mid in non_queued_dl:
                 non_queued_dl.remove(listener.mid)
             if (
