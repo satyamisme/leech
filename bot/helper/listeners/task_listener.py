@@ -1,4 +1,4 @@
-from aiofiles.os import path as aiopath, listdir, remove, makedirs
+from aiofiles.os import path as aiopath, listdir, remove
 from asyncio import sleep, gather
 from os import path as ospath
 from html import escape
@@ -31,7 +31,6 @@ from ..ext_utils.files_utils import (
     remove_excluded_files,
     move_and_merge,
     is_video,
-    is_archive,
 )
 from ..ext_utils.links_utils import is_gdrive_id
 from ..ext_utils.status_utils import get_readable_file_size
@@ -68,25 +67,6 @@ class TaskListener(TaskConfig):
         self.status_message = None
         self.start_time = time()
         self.last_progress_text = None
-
-    async def before_start(self):
-        self.dir = f"{DOWNLOAD_DIR}{self.mid}"
-        self.up_dir = f"{self.dir}_up"
-        await makedirs(self.dir, exist_ok=True)
-        await makedirs(self.up_dir, exist_ok=True)
-        LOGGER.info(f"Created directories: {self.dir}, {self.up_dir}")
-
-    async def init_bulk(self, input_list, bulk_start, bulk_end, mirror):
-        pass
-
-    async def run_multi(self, input_list, mirror):
-        pass
-
-    async def get_tag(self, text):
-        pass
-
-    async def proceed_extract(self, path, gid):
-        pass
 
     async def on_task_created(self):
         self.status_message = await send_message(self.message, "🎬 Analyzing Streams... ⏳")
@@ -129,71 +109,166 @@ class TaskListener(TaskConfig):
             )
 
     async def on_download_complete(self):
+        await sleep(2)
         if self.is_cancelled:
+            return
+        multi_links = False
+        if (
+            self.folder_name
+            and self.same_dir
+            and self.mid in self.same_dir[self.folder_name]["tasks"]
+        ):
+            async with same_directory_lock:
+                while True:
+                    async with task_dict_lock:
+                        if self.mid not in self.same_dir[self.folder_name]["tasks"]:
+                            return
+                        if (
+                            self.same_dir[self.folder_name]["total"] <= 1
+                            or len(self.same_dir[self.folder_name]["tasks"]) > 1
+                        ):
+                            if self.same_dir[self.folder_name]["total"] > 1:
+                                self.same_dir[self.folder_name]["tasks"].remove(self.mid)
+                                self.same_dir[self.folder_name]["total"] -= 1
+                                spath = f"{self.dir}{self.folder_name}"
+                                des_id = list(self.same_dir[self.folder_name]["tasks"])[0]
+                                des_path = f"{DOWNLOAD_DIR}{des_id}{self.folder_name}"
+                                LOGGER.info(f"Moving files from {self.mid} to {des_id}")
+                                await move_and_merge(spath, des_path, self.mid)
+                                multi_links = True
+                            break
+                    await sleep(1)
+
+        async with task_dict_lock:
+            if self.is_cancelled: return
+            if self.mid not in task_dict: return
+            download = task_dict[self.mid]
+            self.name = download.name()
+            gid = download.gid()
+        LOGGER.info(f"Download completed: {self.name}")
+
+        if multi_links:
+            await self.on_upload_error(f"{self.name} Downloaded!\n\nWaiting for other tasks to finish...")
             return
 
         dl_path = f"{self.dir}/{self.name}"
         up_path = dl_path
 
-        # Step 1: Extract if it's a ZIP/RAR
-        if self.extract and is_archive(up_path):
-            LOGGER.info(f"Extracting archive: {up_path}")
-            up_path = await self.proceed_extract(up_path, self.gid)
-            if not up_path or self.is_cancelled:
-                return
-            # After extract, up_path is now a directory with extracted files
+        if self.extract:
+            up_path = await self.proceed_extract(up_path, gid)
+            if self.is_cancelled: return
+            self.name = up_path.replace(f"{self.dir}/", "").split("/", 1)[0]
 
-        # Step 2: If it's a directory (from torrent or extraction), find video files
-        if await aiopath.isdir(up_path):
-            LOGGER.info(f"Processing directory: {up_path}")
-            video_files = []
-            async for root, _, files in aiopath.walk(up_path):
-                for f in files:
-                    fp = ospath.join(root, f)
-                    if await is_video(fp):
-                        size = await aiopath.getsize(fp)
-                        video_files.append((fp, size))
-            if not video_files:
-                await self.on_upload_error("No video files found in the extracted folder.")
-                return
+        if await is_video(up_path):
+            if self.status_message:
+                await edit_message(self.status_message, f"🎬 **Processing Video:** `{self.name}` 🔄")
 
-            # Sort by size, largest first
-            video_files.sort(key=lambda x: x[1], reverse=True)
-
-            # Process each video file
-            for video_file, _ in video_files:
-                self.name = ospath.basename(video_file)
-                await self._process_single_video(video_file)
-
-        else:
-            # Single file
-            await self._process_single_video(up_path)
-
-        # Final cleanup
-        await clean_download(self.dir)
-        if self.up_dir:
-            await clean_download(self.up_dir)
-
-    async def _process_single_video(self, up_path):
-        if self.is_leech and not self.compress:
+            interval = SetInterval(3, self._update_ffmpeg_progress)
             result = await process_video(up_path, self)
-            if not result or self.is_cancelled:
-                return
-            processed_path, media_info = result
-            upload_path = processed_path
-            self.media_info = media_info
-            self.streams_kept = media_info.get("streams_kept", [])
-            self.streams_removed = media_info.get("streams_removed", [])
-        else:
-            upload_path = up_path
-
-        # ✅ Correct order: listener first, then path
-        tg_uploader = TelegramUploader(self, upload_path)
-        async for sent_message in tg_uploader.upload():
+            interval.cancel()
             if self.is_cancelled:
                 return
-            if sent_message:
-                await self._send_leech_completion_message(sent_message)
+
+            if isinstance(result, tuple):
+                if result[0] is not None:
+                    processed_path, self.media_info = result
+                    up_path = processed_path
+                    self.name = up_path.replace(f"{self.dir}/", "").split("/", 1)[0]
+                else:
+                    LOGGER.error("Video processing failed. Aborting task.")
+                    await self.on_upload_error("Video processing failed.")
+                    return
+            elif isinstance(result, str):
+                up_path = result
+            else:
+                LOGGER.error("Video processing failed. Aborting task.")
+                await self.on_upload_error("Video processing failed.")
+                return
+
+        if self.join:
+            await join_files(up_path)
+
+        if self.name_sub:
+            up_path = await self.substitute(up_path)
+            self.name = up_path.replace(f"{self.dir}/", "").split("/", 1)[0]
+
+        if self.compress:
+            up_path = await self.proceed_compress(up_path, gid)
+            if self.is_cancelled: return
+            self.name = up_path.replace(f"{self.dir}/", "").split("/", 1)[0]
+
+        if self.is_leech and not self.compress:
+            is_file = self.is_file
+            await self.proceed_split(up_path, gid)
+            if self.is_cancelled:
+                return
+            self.clear()
+            if is_file:
+                up_path = ospath.dirname(up_path)
+
+        self.size = await get_path_size(up_path)
+        if self.size == 0:
+            await self.on_upload_error("File size is zero")
+            return
+
+        add_to_queue, event = await check_running_tasks(self, "up")
+        if add_to_queue:
+            LOGGER.info(f"Added to Queue/Upload: {self.name}")
+            async with task_dict_lock:
+                task_dict[self.mid] = QueueStatus(self, gid, "Up")
+            await event.wait()
+            if self.is_cancelled: return
+            LOGGER.info(f"Start from Queued/Upload: {self.name}")
+
+        if self.is_leech:
+            if self.status_message:
+                await edit_message(self.status_message, f"🎬 **Uploading:** `{self.name}` 📤")
+            LOGGER.info(f"Leech Name: {self.name}")
+            upload_path = up_path
+            if await aiopath.isfile(upload_path):
+                upload_path = ospath.dirname(upload_path)
+            tg = TelegramUploader(self, upload_path)
+            async with task_dict_lock:
+                task_dict[self.mid] = TelegramStatus(self, tg, gid, "up")
+
+            async for sent_message in tg.upload():
+                if self.is_cancelled:
+                    break
+                if sent_message:
+                    await self._send_leech_completion_message(sent_message)
+
+            if self.is_cancelled:
+                return
+
+            if self.status_message:
+                await delete_message(self.status_message)
+
+            # Final cleanup for leech tasks
+            await clean_download(self.dir)
+            async with task_dict_lock:
+                if self.mid in task_dict:
+                    del task_dict[self.mid]
+                count = len(task_dict)
+            if count == 0:
+                await self.clean()
+            else:
+                await update_status_message(self.message.chat.id)
+            async with queue_dict_lock:
+                if self.mid in non_queued_up:
+                    non_queued_up.remove(self.mid)
+            await start_from_queued()
+        elif is_gdrive_id(self.up_dest):
+            LOGGER.info(f"Gdrive Upload Name: {self.name}")
+            drive = GoogleDriveUpload(self, up_path)
+            async with task_dict_lock:
+                task_dict[self.mid] = GoogleDriveStatus(self, drive, gid, "up")
+            await sync_to_async(drive.upload)
+        else:
+            LOGGER.info(f"Rclone Upload Name: {self.name}")
+            RCTransfer = RcloneTransferHelper(self)
+            async with task_dict_lock:
+                task_dict[self.mid] = RcloneStatus(self, RCTransfer, gid, "up")
+            await RCTransfer.upload(up_path)
 
     async def _update_ffmpeg_progress(self):
         if self.status_message is None:
