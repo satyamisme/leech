@@ -6,7 +6,6 @@ from ... import (
     non_queued_up,
     non_queued_dl,
     queue_dict_lock,
-    task_dict_lock,
     LOGGER,
 )
 from ...core.config_manager import Config
@@ -60,34 +59,33 @@ async def check_running_tasks(listener, state="dl"):
     event = None
     is_over_limit = False
     async with queue_dict_lock:
-        async with task_dict_lock:
-            if state == "up" and listener.mid in non_queued_dl:
-                non_queued_dl.remove(listener.mid)
-            if (
-                (all_limit or state_limit)
-                and not listener.force_run
-                and not (listener.force_upload and state == "up")
-                and not (listener.force_download and state == "dl")
-            ):
-                dl_count = len(non_queued_dl)
-                up_count = len(non_queued_up)
-                t_count = dl_count if state == "dl" else up_count
-                is_over_limit = (
-                    all_limit
-                    and dl_count + up_count >= all_limit
-                    and (not state_limit or t_count >= state_limit)
-                ) or (state_limit and t_count >= state_limit)
-                if is_over_limit:
-                    event = Event()
-                    if state == "dl":
-                        queued_dl[listener.mid] = event
-                    else:
-                        queued_up[listener.mid] = event
-            if not is_over_limit:
-                if state == "up":
-                    non_queued_up.add(listener.mid)
+        if state == "up" and listener.mid in non_queued_dl:
+            non_queued_dl.remove(listener.mid)
+        if (
+            (all_limit or state_limit)
+            and not listener.force_run
+            and not (listener.force_upload and state == "up")
+            and not (listener.force_download and state == "dl")
+        ):
+            dl_count = len(non_queued_dl)
+            up_count = len(non_queued_up)
+            t_count = dl_count if state == "dl" else up_count
+            is_over_limit = (
+                all_limit
+                and dl_count + up_count >= all_limit
+                and (not state_limit or t_count >= state_limit)
+            ) or (state_limit and t_count >= state_limit)
+            if is_over_limit:
+                event = Event()
+                if state == "dl":
+                    queued_dl[listener.mid] = event
                 else:
-                    non_queued_dl.add(listener.mid)
+                    queued_up[listener.mid] = event
+        if not is_over_limit:
+            if state == "up":
+                non_queued_up.add(listener.mid)
+            else:
+                non_queued_dl.add(listener.mid)
 
     return is_over_limit, event
 

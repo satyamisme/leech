@@ -247,29 +247,23 @@ async def edit_variable(_, message, pre_message, key):
         value = False
         if key == "INCOMPLETE_TASK_NOTIFIER" and Config.DATABASE_URL:
             await database.trunc_table("tasks")
-    elif key in ("STATUS_UPDATE_INTERVAL", "TORRENT_TIMEOUT", "LEECH_SPLIT_SIZE", "BASE_URL_PORT"):
-        try:
-            value = int(value)
-        except ValueError:
-            await send_message(message, f"Invalid integer value: {value}")
-            return
-        if key == "STATUS_UPDATE_INTERVAL":
-            async with task_dict_lock:
-                if len(task_dict) != 0 and (st := intervals["status"]):
-                    for cid, intvl in list(st.items()):
-                        intvl.cancel()
-                        intervals["status"][cid] = SetInterval(
-                            value, update_status_message, cid
-                        )
-        elif key == "TORRENT_TIMEOUT":
-            await TorrentManager.change_aria2_option("bt-stop-timeout", f"{value}")
-        elif key == "LEECH_SPLIT_SIZE":
-            value = min(value, TgClient.MAX_SPLIT_SIZE)
-        elif key == "BASE_URL_PORT" and Config.BASE_URL:
-            try:
-                await (await create_subprocess_exec("pkill", "-9", "-f", "gunicorn")).wait()
-            except FileNotFoundError:
-                pass
+    elif key == "STATUS_UPDATE_INTERVAL":
+        value = int(value)
+        if len(task_dict) != 0 and (st := intervals["status"]):
+            for cid, intvl in list(st.items()):
+                intvl.cancel()
+                intervals["status"][cid] = SetInterval(
+                    value, update_status_message, cid
+                )
+    elif key == "TORRENT_TIMEOUT":
+        await TorrentManager.change_aria2_option("bt-stop-timeout", value)
+        value = int(value)
+    elif key == "LEECH_SPLIT_SIZE":
+        value = min(int(value), TgClient.MAX_SPLIT_SIZE)
+    elif key == "BASE_URL_PORT":
+        value = int(value)
+        if Config.BASE_URL:
+            await (await create_subprocess_exec("pkill", "-9", "-f", "gunicorn")).wait()
             await create_subprocess_shell(
                 f"gunicorn -k uvicorn.workers.UvicornWorker -w 1 web.wserver:app --bind 0.0.0.0:{value}"
             )
@@ -305,38 +299,14 @@ async def edit_variable(_, message, pre_message, key):
         sudo_users.clear()
         aid = value.split()
         for id_ in aid:
-            try:
-                sudo_users.append(int(id_.strip()))
-            except ValueError:
-                await sendMessage(message, f"Invalid value for SUDO_USERS: {id_}. Should be an integer.")
-                return
+            sudo_users.append(int(id_.strip()))
     elif value.isdigit():
-        try:
-            value = int(value)
-        except ValueError:
-            await sendMessage(message, f"Invalid value for {key}: {value}. Expected an integer.")
-            return
+        value = int(value)
     elif value.startswith("[") and value.endswith("]"):
-        try:
-            value = literal_eval(value)
-            if not isinstance(value, list):
-                raise ValueError
-        except (ValueError, SyntaxError):
-            await sendMessage(message, f"Invalid list format for {key}: {value}")
-            return
+        value = eval(value)
     elif value.startswith("{") and value.endswith("}"):
-        try:
-            value = literal_eval(value)
-            if not isinstance(value, dict):
-                raise ValueError
-        except (ValueError, SyntaxError):
-            await sendMessage(message, f"Invalid dictionary format for {key}: {value}")
-            return
-    try:
-        Config.set(key, value)
-    except (TypeError, ValueError) as e:
-        await sendMessage(message, f"Error setting {key}: {e}")
-        return
+        value = eval(value)
+    Config.set(key, value)
     await update_buttons(pre_message, "var")
     await delete_message(message)
     await database.update_config({key: value})
@@ -480,12 +450,9 @@ async def update_private_file(_, message, pre_message):
             Config.USE_SERVICE_ACCOUNTS = False
             await database.update_config({"USE_SERVICE_ACCOUNTS": False})
         elif file_name in [".netrc", "netrc"]:
-            try:
-                await (await create_subprocess_exec("touch", ".netrc")).wait()
-                await (await create_subprocess_exec("chmod", "600", ".netrc")).wait()
-                await (await create_subprocess_exec("cp", ".netrc", "/root/.netrc")).wait()
-            except FileNotFoundError:
-                LOGGER.error("touch, chmod, or cp command not found.")
+            await (await create_subprocess_exec("touch", ".netrc")).wait()
+            await (await create_subprocess_exec("chmod", "600", ".netrc")).wait()
+            await (await create_subprocess_exec("cp", ".netrc", "/root/.netrc")).wait()
         await delete_message(message)
     elif doc := message.document:
         file_name = doc.file_name
@@ -498,17 +465,14 @@ async def update_private_file(_, message, pre_message):
                 await rmtree("accounts", ignore_errors=True)
             if await aiopath.exists("rclone_sa"):
                 await rmtree("rclone_sa", ignore_errors=True)
-            try:
-                await (
-                    await create_subprocess_exec(
-                        "7z", "x", "-o.", "-aoa", "accounts.zip", "accounts/*.json"
-                    )
-                ).wait()
-                await (
-                    await create_subprocess_exec("chmod", "-R", "777", "accounts")
-                ).wait()
-            except FileNotFoundError:
-                LOGGER.error("7z or chmod command not found.")
+            await (
+                await create_subprocess_exec(
+                    "7z", "x", "-o.", "-aoa", "accounts.zip", "accounts/*.json"
+                )
+            ).wait()
+            await (
+                await create_subprocess_exec("chmod", "-R", "777", "accounts")
+            ).wait()
         elif file_name == "list_drives.txt":
             drives_ids.clear()
             drives_names.clear()
@@ -531,14 +495,11 @@ async def update_private_file(_, message, pre_message):
             if file_name == "netrc":
                 await rename("netrc", ".netrc")
                 file_name = ".netrc"
-            try:
-                await (await create_subprocess_exec("chmod", "600", ".netrc")).wait()
-                await (await create_subprocess_exec("cp", ".netrc", "/root/.netrc")).wait()
-            except FileNotFoundError:
-                LOGGER.error("chmod or cp command not found.")
+            await (await create_subprocess_exec("chmod", "600", ".netrc")).wait()
+            await (await create_subprocess_exec("cp", ".netrc", "/root/.netrc")).wait()
         elif file_name == "config.py":
             await load_config()
-        if Config.UPSTREAM_REPO and "@github.com" in Config.UPSTREAM_REPO:
+        if "@github.com" in Config.UPSTREAM_REPO:
             buttons = ButtonMaker()
             msg = "Push to UPSTREAM_REPO ?"
             buttons.data_button("Yes!", f"botset push {file_name}")
@@ -578,11 +539,7 @@ async def event_handler(client, query, pfunc, rfunc, document=False):
 
 @new_task
 async def edit_bot_settings(client, query):
-    if not query or not query.data:
-        return
     data = query.data.split()
-    if len(data) < 2:
-        return
     message = query.message
     handler_dict[message.chat.id] = False
     if data[1] == "close":
@@ -612,19 +569,21 @@ async def edit_bot_settings(client, query):
             globals()["start"] = 0
         await query.answer()
         await update_buttons(message, data[1])
-    elif data[1] == "resetvar" and len(data) == 3:
+    elif data[1] == "resetvar":
         await query.answer()
         value = ""
         if data[2] in DEFAULT_VALUES:
             value = DEFAULT_VALUES[data[2]]
-            if data[2] == "STATUS_UPDATE_INTERVAL":
-                async with task_dict_lock:
-                    if len(task_dict) != 0 and (st := intervals["status"]):
-                        for key, intvl in list(st.items()):
-                            intvl.cancel()
-                            intervals["status"][key] = SetInterval(
-                                value, update_status_message, key
-                            )
+            if (
+                data[2] == "STATUS_UPDATE_INTERVAL"
+                and len(task_dict) != 0
+                and (st := intervals["status"])
+            ):
+                for key, intvl in list(st.items()):
+                    intvl.cancel()
+                    intervals["status"][key] = SetInterval(
+                        value, update_status_message, key
+                    )
         elif data[2] == "EXCLUDED_EXTENSIONS":
             excluded_extensions.clear()
             excluded_extensions.extend(["aria2", "!qB"])
@@ -632,19 +591,13 @@ async def edit_bot_settings(client, query):
             await TorrentManager.change_aria2_option("bt-stop-timeout", "0")
             await database.update_aria2("bt-stop-timeout", "0")
         elif data[2] == "BASE_URL":
-            try:
-                await (await create_subprocess_exec("pkill", "-9", "-f", "gunicorn")).wait()
-            except FileNotFoundError:
-                pass
+            await (await create_subprocess_exec("pkill", "-9", "-f", "gunicorn")).wait()
         elif data[2] == "BASE_URL_PORT":
             value = 80
             if Config.BASE_URL:
-                try:
-                    await (
-                        await create_subprocess_exec("pkill", "-9", "-f", "gunicorn")
-                    ).wait()
-                except FileNotFoundError:
-                    pass
+                await (
+                    await create_subprocess_exec("pkill", "-9", "-f", "gunicorn")
+                ).wait()
                 await create_subprocess_shell(
                     f"gunicorn -k uvicorn.workers.UvicornWorker -w 1 web.wserver:app --bind 0.0.0.0:{value}"
                 )
@@ -659,10 +612,7 @@ async def edit_bot_settings(client, query):
         elif data[2] == "INCOMPLETE_TASK_NOTIFIER":
             await database.trunc_table("tasks")
         elif data[2] in ["JD_EMAIL", "JD_PASS"]:
-            try:
-                await create_subprocess_exec("pkill", "-9", "-f", "java")
-            except FileNotFoundError:
-                LOGGER.error("pkill command not found.")
+            await create_subprocess_exec("pkill", "-9", "-f", "java")
         elif data[2] == "USENET_SERVERS":
             for s in Config.USENET_SERVERS:
                 await sabnzbd_client.delete_config("servers", s["name"])
@@ -686,7 +636,7 @@ async def edit_bot_settings(client, query):
             "RCLONE_SERVE_PASS",
         ]:
             await rclone_serve_booter()
-    elif data[1] == "resetnzb" and len(data) == 3:
+    elif data[1] == "resetnzb":
         await query.answer()
         res = await sabnzbd_client.set_config_default(data[2])
         nzb_options[data[2]] = res["config"]["misc"][data[2]]
@@ -706,25 +656,25 @@ async def edit_bot_settings(client, query):
         qbit_options.clear()
         await update_qb_options()
         await database.save_qbit_settings()
-    elif data[1] == "emptyaria" and len(data) == 3:
+    elif data[1] == "emptyaria":
         await query.answer()
         aria2_options[data[2]] = ""
         await update_buttons(message, "aria")
         await TorrentManager.change_aria2_option(data[2], "")
         await database.update_aria2(data[2], "")
-    elif data[1] == "emptyqbit" and len(data) == 3:
+    elif data[1] == "emptyqbit":
         await query.answer()
         await TorrentManager.qbittorrent.app.set_preferences({data[2]: value})
         qbit_options[data[2]] = ""
         await update_buttons(message, "qbit")
         await database.update_qbittorrent(data[2], "")
-    elif data[1] == "emptynzb" and len(data) == 3:
+    elif data[1] == "emptynzb":
         await query.answer()
         res = await sabnzbd_client.set_config("misc", data[2], "")
         nzb_options[data[2]] = res["config"]["misc"][data[2]]
         await update_buttons(message, "nzb")
         await database.update_nzb_config()
-    elif data[1] == "remser" and len(data) == 3:
+    elif data[1] == "remser":
         index = int(data[2])
         await sabnzbd_client.delete_config(
             "servers", Config.USENET_SERVERS[index]["name"]
@@ -738,13 +688,13 @@ async def edit_bot_settings(client, query):
         pfunc = partial(update_private_file, pre_message=message)
         rfunc = partial(update_buttons, message)
         await event_handler(client, query, pfunc, rfunc, True)
-    elif data[1] == "botvar" and state == "edit" and len(data) == 3:
+    elif data[1] == "botvar" and state == "edit":
         await query.answer()
         await update_buttons(message, data[2], data[1])
         pfunc = partial(edit_variable, pre_message=message, key=data[2])
         rfunc = partial(update_buttons, message, "var")
         await event_handler(client, query, pfunc, rfunc)
-    elif data[1] == "botvar" and state == "view" and len(data) == 3:
+    elif data[1] == "botvar" and state == "view":
         value = f"{Config.get(data[2])}"
         if len(value) > 200:
             await query.answer()
@@ -755,13 +705,13 @@ async def edit_bot_settings(client, query):
         elif value == "":
             value = None
         await query.answer(f"{value}", show_alert=True)
-    elif data[1] == "ariavar" and len(data) == 3 and (state == "edit" or data[2] == "newkey"):
+    elif data[1] == "ariavar" and (state == "edit" or data[2] == "newkey"):
         await query.answer()
         await update_buttons(message, data[2], data[1])
         pfunc = partial(edit_aria, pre_message=message, key=data[2])
         rfunc = partial(update_buttons, message, "aria")
         await event_handler(client, query, pfunc, rfunc)
-    elif data[1] == "ariavar" and state == "view" and len(data) == 3:
+    elif data[1] == "ariavar" and state == "view":
         value = f"{aria2_options[data[2]]}"
         if len(value) > 200:
             await query.answer()
@@ -772,13 +722,13 @@ async def edit_bot_settings(client, query):
         elif value == "":
             value = None
         await query.answer(f"{value}", show_alert=True)
-    elif data[1] == "qbitvar" and state == "edit" and len(data) == 3:
+    elif data[1] == "qbitvar" and state == "edit":
         await query.answer()
         await update_buttons(message, data[2], data[1])
         pfunc = partial(edit_qbit, pre_message=message, key=data[2])
         rfunc = partial(update_buttons, message, "qbit")
         await event_handler(client, query, pfunc, rfunc)
-    elif data[1] == "qbitvar" and state == "view" and len(data) == 3:
+    elif data[1] == "qbitvar" and state == "view":
         value = f"{qbit_options[data[2]]}"
         if len(value) > 200:
             await query.answer()
@@ -789,13 +739,13 @@ async def edit_bot_settings(client, query):
         elif value == "":
             value = None
         await query.answer(f"{value}", show_alert=True)
-    elif data[1] == "nzbvar" and state == "edit" and len(data) == 3:
+    elif data[1] == "nzbvar" and state == "edit":
         await query.answer()
         await update_buttons(message, data[2], data[1])
         pfunc = partial(edit_nzb, pre_message=message, key=data[2])
         rfunc = partial(update_buttons, message, "nzb")
         await event_handler(client, query, pfunc, rfunc)
-    elif data[1] == "nzbvar" and state == "view" and len(data) == 3:
+    elif data[1] == "nzbvar" and state == "view":
         value = f"{nzb_options[data[2]]}"
         if len(value) > 200:
             await query.answer()
@@ -806,7 +756,7 @@ async def edit_bot_settings(client, query):
         elif value == "":
             value = None
         await query.answer(f"{value}", show_alert=True)
-    elif data[1] == "emptyserkey" and len(data) == 4:
+    elif data[1] == "emptyserkey":
         await query.answer()
         await update_buttons(message, f"nzbser{data[2]}")
         index = int(data[2])
@@ -815,7 +765,7 @@ async def edit_bot_settings(client, query):
         )
         Config.USENET_SERVERS[index][data[3]] = res["config"]["servers"][0][data[3]]
         await database.update_config({"USENET_SERVERS": Config.USENET_SERVERS})
-    elif len(data) >= 3 and data[1].startswith("nzbsevar") and (state == "edit" or data[2] == "newser"):
+    elif data[1].startswith("nzbsevar") and (state == "edit" or data[2] == "newser"):
         index = 0 if data[2] == "newser" else int(data[1].replace("nzbsevar", ""))
         await query.answer()
         await update_buttons(message, data[2], data[1])
@@ -826,7 +776,7 @@ async def edit_bot_settings(client, query):
             f"nzbser{index}" if data[2] != "newser" else "nzbserver",
         )
         await event_handler(client, query, pfunc, rfunc)
-    elif len(data) >= 3 and data[1].startswith("nzbsevar") and state == "view":
+    elif data[1].startswith("nzbsevar") and state == "view":
         index = int(data[1].replace("nzbsevar", ""))
         value = f"{Config.USENET_SERVERS[index][data[2]]}"
         if len(value) > 200:
@@ -838,20 +788,20 @@ async def edit_bot_settings(client, query):
         elif value == "":
             value = None
         await query.answer(f"{value}", show_alert=True)
-    elif data[1] == "edit" and len(data) == 3:
+    elif data[1] == "edit":
         await query.answer()
         globals()["state"] = "edit"
         await update_buttons(message, data[2])
-    elif data[1] == "view" and len(data) == 3:
+    elif data[1] == "view":
         await query.answer()
         globals()["state"] = "view"
         await update_buttons(message, data[2])
-    elif data[1] == "start" and len(data) == 4:
+    elif data[1] == "start":
         await query.answer()
         if start != int(data[3]):
             globals()["start"] = int(data[3])
             await update_buttons(message, data[2])
-    elif data[1] == "push" and len(data) == 3:
+    elif data[1] == "push":
         await query.answer()
         filename = data[2].rsplit(".zip", 1)[0]
         if await aiopath.exists(filename):
