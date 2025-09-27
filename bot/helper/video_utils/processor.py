@@ -10,20 +10,26 @@ import os.path as ospath
 from aiofiles.os import rename as aiorename, path as aiopath
 
 async def get_media_info(path):
-    """Get media information using ffprobe."""
+    """Get media information using ffprobe with a timeout."""
     try:
         process = await asyncio.create_subprocess_exec(
             'ffprobe', '-hide_banner', '-loglevel', 'error', '-print_format', 'json',
             '-show_format', '-show_streams', path,
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
         )
-        stdout, stderr = await process.communicate()
+        try:
+            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=60)
+        except asyncio.TimeoutError:
+            LOGGER.error(f"ffprobe timed out while processing {path}")
+            process.kill()
+            return None
+
         if process.returncode != 0:
-            LOGGER.error(f"ffprobe error: {stderr.decode().strip()}")
+            LOGGER.error(f"ffprobe error for {path}: {stderr.decode().strip()}")
             return None
         return json.loads(stdout)
     except Exception as e:
-        LOGGER.error(f"Exception while getting media info: {e}")
+        LOGGER.error(f"Exception in get_media_info for {path}: {e}")
         return None
 
 async def run_ffmpeg(command, path, listener):
