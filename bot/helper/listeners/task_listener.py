@@ -1,7 +1,9 @@
 from aiofiles.os import path as aiopath, listdir, remove
 from asyncio import sleep, gather
+from base64 import b64encode
 from os import path as ospath
 from html import escape
+from re import match as re_match
 from requests import utils as rutils
 
 from ... import (
@@ -20,8 +22,9 @@ from ... import (
 from ...core.config_manager import Config
 from ...core.torrent_manager import TorrentManager
 from ..common import TaskConfig
-from ..ext_utils.bot_utils import sync_to_async
+from ..ext_utils.bot_utils import sync_to_async, get_content_type
 from ..ext_utils.db_handler import database
+from ..ext_utils.exceptions import DirectDownloadLinkException
 from ..ext_utils.files_utils import (
     get_path_size,
     clean_download,
@@ -32,17 +35,31 @@ from ..ext_utils.files_utils import (
     move_and_merge,
     is_video,
     is_archive,
+    get_base_name,
+    extract_archive,
 )
-from ..ext_utils.links_utils import is_gdrive_id
+from ..ext_utils.links_utils import is_gdrive_id, is_magnet, is_rclone_path, is_gdrive_link
 from ..ext_utils.status_utils import get_readable_file_size
 from ..ext_utils.task_manager import start_from_queued, check_running_tasks
+from ..mirror_leech_utils.download_utils.aria2_download import add_aria2_download
+from ..mirror_leech_utils.download_utils.direct_downloader import add_direct_download
+from ..mirror_leech_utils.download_utils.direct_link_generator import (
+    direct_link_generator,
+)
+from ..mirror_leech_utils.download_utils.gd_download import add_gd_download
+from ..mirror_leech_utils.download_utils.jd_download import add_jd_download
+from ..mirror_leech_utils.download_utils.nzb_downloader import add_nzb
+from ..mirror_leech_utils.download_utils.qbit_download import add_qb_torrent
+from ..mirror_leech_utils.download_utils.rclone_download import add_rclone_download
+from ..mirror_leech_utils.download_utils.telegram_download import (
+    TelegramDownloadHelper,
+)
 from ..mirror_leech_utils.gdrive_utils.upload import GoogleDriveUpload
 from ..mirror_leech_utils.rclone_utils.transfer import RcloneTransferHelper
 from ..mirror_leech_utils.status_utils.gdrive_status import GoogleDriveStatus
 from ..mirror_leech_utils.status_utils.queue_status import QueueStatus
 from ..mirror_leech_utils.status_utils.rclone_status import RcloneStatus
 from ..mirror_leech_utils.status_utils.telegram_status import TelegramStatus
-from ..mirror_leech_utils.telegram_uploader import TelegramUploader
 from ..telegram_helper.button_build import ButtonMaker
 from ..video_utils.processor import process_video
 from ..telegram_helper.message_utils import (
@@ -76,6 +93,9 @@ class TaskListener(TaskConfig):
         self.file_ = None
         self.session = ""
         self.path = ""
+        self.total_parts = 1
+        self.current_part = 1
+        self.original_name = ""
 
     async def on_task_created(self):
         self.status_message = await send_message(self.message, "🎬 Analyzing Streams... ⏳")
@@ -179,6 +199,13 @@ class TaskListener(TaskConfig):
                 self.message.chat.id, self.message.link, self.tag
             )
 
+    async def proceed_extract(self, up_path, gid):
+        try:
+            return await extract_archive(up_path, f"{self.dir}/{gid}")
+        except Exception as e:
+            await self.on_upload_error(str(e))
+            return None
+
     async def on_download_complete(self):
         if self.is_cancelled:
             return
@@ -226,6 +253,7 @@ class TaskListener(TaskConfig):
             await clean_download(self.up_dir)
 
     async def _process_single_video(self, up_path):
+        from ..mirror_leech_utils.telegram_uploader import TelegramUploader
         if self.is_leech and not self.compress:
             result = await process_video(up_path, self)
             if not result or self.is_cancelled:

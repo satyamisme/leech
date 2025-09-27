@@ -7,6 +7,7 @@ from asyncio import (
     sleep,
 )
 from asyncio.subprocess import PIPE
+from json import JSONDecodeError, loads as json_loads
 from os import path as ospath
 from re import search as re_search, escape
 from time import time
@@ -50,7 +51,10 @@ async def get_media_info(path):
         LOGGER.error(f"Get Media Info: {e}. Mostly File not found! - File: {path}")
         return 0, None, None
     if result[0] and result[2] == 0:
-        fields = eval(result[0]).get("format")
+        try:
+            fields = json_loads(result[0]).get("format")
+        except JSONDecodeError:
+            fields = None
         if fields is None:
             LOGGER.error(f"get_media_info: {result}")
             return 0, None, None
@@ -98,7 +102,10 @@ async def get_document_type(path):
             is_video = True
         return is_video, is_audio, is_image
     if result[0] and result[2] == 0:
-        fields = eval(result[0]).get("streams")
+        try:
+            fields = json_loads(result[0]).get("streams")
+        except JSONDecodeError:
+            fields = None
         if fields is None:
             LOGGER.error(f"get_document_type: {result}")
             return is_video, is_audio, is_image
