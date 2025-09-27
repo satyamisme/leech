@@ -8,7 +8,7 @@ from pyrogram.types import CallbackQuery
 from time import time
 
 from bot import VID_MODE
-from bot.helper.ext_utils.bot_utils import new_thread
+from bot.helper.ext_utils.bot_utils import sync_to_async
 from bot.helper.ext_utils.status_utils import get_readable_file_size, get_readable_time
 from bot.helper.telegram_helper.button_build import ButtonMaker
 from bot.helper.telegram_helper.message_utils import sendMessage, editMessage, deleteMessage
@@ -58,7 +58,7 @@ class ExtraSelect:
         self.executor.data['sdata'] = streams_to_remove
         self.event.set()
 
-    @new_thread
+    @sync_to_async
     async def _event_handler(self):
         pfunc = partial(cb_extra, obj=self)
         handler = self._listener.client.add_handler(CallbackQueryHandler(pfunc, filters=regex('^extra') & user(self._listener.user_id)), group=-1)

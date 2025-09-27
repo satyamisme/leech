@@ -251,5 +251,3 @@ def loop_thread(func):
         return future.result() if wait else future
 
     return wrapper
-
-new_thread = sync_to_async

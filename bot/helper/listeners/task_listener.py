@@ -216,6 +216,7 @@ class TaskListener(TaskConfig):
         # Step 1: Extract if it's a ZIP/RAR
         if self.extract and is_archive(up_path):
             LOGGER.info(f"Extracting archive: {up_path}")
+            # Calling the new extract function
             up_path = await self.proceed_extract(up_path, self.gid)
             if not up_path or self.is_cancelled:
                 return
@@ -331,9 +332,10 @@ class TaskListener(TaskConfig):
         current_part = self.current_part
 
         msg = f"🎬 <code>{self.name}</code>"
-        msg += f"\n📁 Part {current_part} of {total_parts} | 📂 Total: {get_readable_file_size(self.size)} | ⏱️ {get_readable_time(float(self.media_info['format']['duration']))}"
+        msg += f"\n📁 Part {current_part} of {total_parts} | 📂 Total: {get_readable_file_size(self.size)}"
 
         if self.media_info:
+            msg += f" | ⏱️ {get_readable_time(float(self.media_info['format']['duration']))}"
             # Video info
             video_stream = next((stream for stream in self.streams_kept if stream['codec_type'] == 'video'), None)
             if video_stream:

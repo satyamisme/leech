@@ -314,6 +314,50 @@ async def is_video(path):
     return False
 
 
+import tarfile
+import zipfile
+import rarfile
+import py7zr
+
+async def extract_archive(file_path, extract_dir):
+    """
+    Extracts an archive using Python-native libraries.
+    Args:
+        file_path (str): The path to the archive file.
+        extract_dir (str): The directory where the contents will be extracted.
+    Returns:
+        str: The path to the extracted files, or None if extraction fails.
+    """
+    try:
+        if await aiopath.isdir(extract_dir):
+            await aiormtree(extract_dir)
+        await aiomakedirs(extract_dir, exist_ok=True)
+
+        if file_path.endswith(('.tar.gz', '.tar.bz2', '.tar.xz', '.tar')):
+            with tarfile.open(file_path, 'r:*') as tar:
+                await sync_to_async(tar.extractall, extract_dir)
+        elif file_path.endswith('.zip'):
+            with zipfile.ZipFile(file_path, 'r') as zf:
+                await sync_to_async(zf.extractall, extract_dir)
+        elif file_path.endswith('.rar'):
+            with rarfile.RarFile(file_path, 'r') as rf:
+                await sync_to_async(rf.extractall, extract_dir)
+        elif file_path.endswith('.7z'):
+            with py7zr.SevenZipFile(file_path, mode='r') as szf:
+                await sync_to_async(szf.extractall, extract_dir)
+        else:
+            raise NotSupportedExtractionArchive(f"Unsupported archive format: {file_path}")
+
+        LOGGER.info(f"Successfully extracted {file_path} to {extract_dir}")
+        files = await listdir(extract_dir)
+        if len(files) == 1 and await aiopath.isdir(ospath.join(extract_dir, files[0])):
+            return ospath.join(extract_dir, files[0])
+        return extract_dir
+    except Exception as e:
+        LOGGER.error(f"An error occurred during extraction: {e}")
+        return None
+
+
 class SevenZ:
     def __init__(self, listener):
         self._listener = listener
