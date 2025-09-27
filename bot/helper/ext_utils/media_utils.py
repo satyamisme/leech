@@ -35,24 +35,32 @@ async def create_thumb(msg, _id=""):
 
 async def get_media_info(path):
     try:
-        result = await cmd_exec(
-            [
-                "ffprobe",
-                "-hide_banner",
-                "-loglevel",
-                "error",
-                "-print_format",
-                "json",
-                "-show_format",
-                path,
-            ]
+        process = await create_subprocess_exec(
+            "ffprobe",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-print_format",
+            "json",
+            "-show_format",
+            path,
+            stdout=PIPE,
+            stderr=PIPE,
         )
-    except Exception as e:
-        LOGGER.error(f"Get Media Info: {e}. Mostly File not found! - File: {path}")
-        return 0, None, None
-    if result[0] and result[2] == 0:
         try:
-            fields = json_loads(result[0]).get("format")
+            stdout, stderr = await wait_for(process.communicate(), timeout=60)
+        except TimeoutError:
+            LOGGER.error(f"ffprobe timed out while getting media info for {path}")
+            process.kill()
+            return 0, None, None
+
+        if process.returncode != 0:
+            LOGGER.error(f"ffprobe error while getting media info for {path}: {stderr.decode().strip()}")
+            return 0, None, None
+
+        result = stdout.decode().strip()
+        try:
+            fields = json_loads(result).get("format")
         except JSONDecodeError:
             fields = None
         if fields is None:
@@ -63,7 +71,9 @@ async def get_media_info(path):
         artist = tags.get("artist") or tags.get("ARTIST") or tags.get("Artist")
         title = tags.get("title") or tags.get("TITLE") or tags.get("Title")
         return duration, artist, title
-    return 0, None, None
+    except Exception as e:
+        LOGGER.error(f"Exception in get_media_info for {path}: {e}")
+        return 0, None, None
 
 
 async def get_document_type(path):
@@ -78,32 +88,32 @@ async def get_document_type(path):
     if mime_type.startswith("image"):
         return False, False, True
     try:
-        result = await cmd_exec(
-            [
-                "ffprobe",
-                "-hide_banner",
-                "-loglevel",
-                "error",
-                "-print_format",
-                "json",
-                "-show_streams",
-                path,
-            ]
+        process = await create_subprocess_exec(
+            "ffprobe",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-print_format",
+            "json",
+            "-show_streams",
+            path,
+            stdout=PIPE,
+            stderr=PIPE,
         )
-        if result[1] and mime_type.startswith("video"):
-            is_video = True
-    except Exception as e:
-        LOGGER.error(f"Get Document Type: {e}. Mostly File not found! - File: {path}")
-        if mime_type.startswith("audio"):
-            return False, True, False
-        if not mime_type.startswith("video") and not mime_type.endswith("octet-stream"):
-            return is_video, is_audio, is_image
-        if mime_type.startswith("video"):
-            is_video = True
-        return is_video, is_audio, is_image
-    if result[0] and result[2] == 0:
         try:
-            fields = json_loads(result[0]).get("streams")
+            stdout, stderr = await wait_for(process.communicate(), timeout=60)
+        except TimeoutError:
+            LOGGER.error(f"ffprobe timed out while getting document type for {path}")
+            process.kill()
+            return False, False, False
+
+        if process.returncode != 0:
+            LOGGER.error(f"ffprobe error while getting document type for {path}: {stderr.decode().strip()}")
+            return False, False, False
+
+        result = stdout.decode().strip()
+        try:
+            fields = json_loads(result).get("streams")
         except JSONDecodeError:
             fields = None
         if fields is None:

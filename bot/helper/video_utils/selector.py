@@ -12,7 +12,7 @@ from re import match as re_match
 from time import time
 
 from bot import config_dict, VID_MODE
-from bot.helper.ext_utils.bot_utils import new_task, new_thread, sync_to_async
+from bot.helper.ext_utils.bot_utils import new_task, sync_to_async
 from bot.helper.ext_utils.files_utils import clean_target
 from bot.helper.ext_utils.links_utils import is_media
 from bot.helper.ext_utils.status_utils import get_readable_time
@@ -36,7 +36,7 @@ class SelectMode():
         self.message_event = Event()
         self.is_cancelled = False
 
-    @new_thread
+    @sync_to_async
     async def _event_handler(self):
         pfunc = partial(cb_vidtools, obj=self)
         handler = self.listener.client.add_handler(CallbackQueryHandler(pfunc, filters=regex('^vidtool') & user(self.listener.user_id)), group=-1)
@@ -49,7 +49,7 @@ class SelectMode():
         finally:
             self.listener.client.remove_handler(*handler)
 
-    @new_thread
+    @sync_to_async
     async def message_event_handler(self, mode=''):
         pfunc = partial(message_handler, obj=self, is_sub=mode == 'subfile')
         handler = self.listener.client.add_handler(MessageHandler(pfunc, user(self.listener.user_id)), group=1)

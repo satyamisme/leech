@@ -150,16 +150,6 @@ class Config:
         if isinstance(converted_value, str):
             converted_value = converted_value.strip()
 
-        if attr == "PREFERRED_LANGUAGES":
-            if isinstance(converted_value, str) and converted_value.startswith('[') and converted_value.endswith(']'):
-                try:
-                    lang_list = literal_eval(converted_value)
-                    if isinstance(lang_list, list):
-                        converted_value = ",".join(str(l).strip() for l in lang_list)
-                except (ValueError, SyntaxError):
-                    pass
-            return converted_value
-
         if attr == "DEFAULT_UPLOAD" and converted_value != "gd":
             return "rc"
 
