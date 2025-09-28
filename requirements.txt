@@ -32,5 +32,3 @@ uvicorn
 uvloop
 xattr
 yt-dlp[default,curl-cffi]
-rarfile
-py7zr
