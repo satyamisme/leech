@@ -266,34 +266,27 @@ async def join_files(opath):
                     await remove(f"{opath}/{file_}")
 
 
-async def split_file(f_path, split_size, listener):
-    out_prefix = f"{f_path}.part."
+async def split_file(path, size, file_, listener):
     if listener.is_cancelled:
         return False
-    listener.subproc = await create_subprocess_exec(
+    base_name, extension = ospath.splitext(file_)
+    split_size = listener.split_size
+    LOGGER.info(f"Splitting {file_} into parts of size {split_size}")
+    cmd = [
         "split",
+        "--bytes",
+        str(split_size),
         "--numeric-suffixes=1",
-        "--suffix-length=2",
-        f"--bytes={split_size}",
-        f_path,
-        out_prefix,
-        stderr=PIPE,
-    )
-    _, stderr = await listener.subproc.communicate()
-    code = listener.subproc.returncode
-    if listener.is_cancelled:
+        "--suffix-length=3",
+        path,
+        f"{ospath.join(ospath.dirname(path), base_name)}.part",
+    ]
+    process = await create_subprocess_exec(*cmd, stderr=PIPE, stdout=PIPE)
+    _, stderr = await process.communicate()
+    if process.returncode != 0:
+        LOGGER.error(f"Error while splitting file: {stderr.decode().strip()}")
         return False
-    if code == -9:
-        listener.is_cancelled = True
-        return False
-    elif code != 0:
-        try:
-            stderr = stderr.decode().strip()
-        except:
-            stderr = "Unable to decode the error!"
-        LOGGER.error(f"{stderr}. Split Document: {f_path}")
     return True
-
 
 async def is_video(path):
     if not await aiopath.isfile(path):
