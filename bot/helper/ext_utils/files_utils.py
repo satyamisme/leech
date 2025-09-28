@@ -269,15 +269,15 @@ async def join_files(opath):
 async def split_file(path, size, file_, listener):
     if listener.is_cancelled:
         return False
+    parts = -(-size // listener.split_size)
     base_name, extension = ospath.splitext(file_)
     split_size = listener.split_size
-    LOGGER.info(f"Splitting {file_} into parts of size {split_size}")
+    LOGGER.info(f"Splitting {file_} into {parts} parts.")
     cmd = [
         "split",
-        "--bytes",
-        str(split_size),
+        f"--bytes={split_size}",
         "--numeric-suffixes=1",
-        "--suffix-length=3",
+        f"--additional-suffix={extension}",
         path,
         f"{ospath.join(ospath.dirname(path), base_name)}.part",
     ]
@@ -287,6 +287,7 @@ async def split_file(path, size, file_, listener):
         LOGGER.error(f"Error while splitting file: {stderr.decode().strip()}")
         return False
     return True
+
 
 async def is_video(path):
     if not await aiopath.isfile(path):
