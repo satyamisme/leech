@@ -5,6 +5,7 @@ from asyncio import (
     gather,
     wait_for,
     sleep,
+    TimeoutError,
 )
 from asyncio.subprocess import PIPE
 from json import JSONDecodeError, loads as json_loads

@@ -152,8 +152,8 @@ class TaskListener(TaskConfig):
         elif is_gdrive_link(self.link) or is_gdrive_id(self.link):
             await add_gd_download(self, self.path)
         else:
-            ussr = self.args["-au"] if self.args else ""
-            pssw = self.args["-ap"] if self.args else ""
+            ussr = self.args.get("-au", "") if self.args else ""
+            pssw = self.args.get("-ap", "") if self.args else ""
             if ussr or pssw:
                 auth = f"{ussr}:{pssw}"
                 self.headers.extend(
@@ -235,6 +235,7 @@ class TaskListener(TaskConfig):
 
             video_files.sort(key=lambda x: x[1], reverse=True)
             self.total_parts = len(video_files)
+            self.current_part = 1
             for video_file, _ in video_files:
                 self.name = ospath.basename(video_file)
                 self.original_name = self.name
