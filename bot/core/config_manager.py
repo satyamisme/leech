@@ -208,9 +208,10 @@ class Config:
         for key in required_keys:
             value = getattr(cls, key)
             if isinstance(value, str):
-                value = value.strip()
-            if not value:
-                raise ValueError(f"{key} variable is missing!")
+                if not value.strip():
+                    raise ValueError(f'"{key}" variable is missing!')
+            elif value == 0:
+                raise ValueError(f'"{key}" variable is not set to a valid value!')
 
     @classmethod
     def load(cls) -> None:

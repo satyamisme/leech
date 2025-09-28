@@ -1,16 +1,17 @@
 import os
 import glob
 import shutil
+from aiofiles.os import remove as aioremove, path as aiopath
 from bot import LOGGER
 from bot.helper.ext_utils.bot_utils import cmd_exec
 
 # Use decimal-based bytes for Telegram limits, as per official documentation
 BUFFER_BYTES = 10 * 1024 * 1024  # 10MB buffer for mkvmerge container overhead
 
-def get_file_size(file_path):
+async def get_file_size(file_path):
     """Safely get the size of a file."""
     try:
-        return os.path.getsize(file_path)
+        return await aiopath.getsize(file_path)
     except OSError as e:
         LOGGER.error(f"Could not get size of file {file_path}: {e}")
         return 0
@@ -27,7 +28,7 @@ async def split_video_if_needed(file_path: str, max_tg_size: int = 2000000000) -
         LOGGER.error("mkvmerge is not installed. Cannot split file.")
         return [file_path]
 
-    original_size = get_file_size(file_path)
+    original_size = await get_file_size(file_path)
     if original_size == 0:
         return []
     if original_size <= max_tg_size:
@@ -50,7 +51,7 @@ async def split_video_if_needed(file_path: str, max_tg_size: int = 2000000000) -
         # Clean up any split files from previous attempts
         for old_file in glob.glob(output_pattern.replace("%03d", "*")):
             try:
-                os.remove(old_file)
+                await aioremove(old_file)
             except OSError as e:
                 LOGGER.warning(f"Could not remove old split part {old_file}: {e}")
 
@@ -75,7 +76,7 @@ async def split_video_if_needed(file_path: str, max_tg_size: int = 2000000000) -
         # Check if any part is oversized
         max_part_size = 0
         for part in split_files:
-            size = get_file_size(part)
+            size = await get_file_size(part)
             if size > max_part_size:
                 max_part_size = size
 

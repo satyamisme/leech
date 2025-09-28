@@ -127,7 +127,7 @@ class RcloneTransferHelper:
         if return_code == 0:
             await self._listener.on_download_complete()
         elif return_code != -9:
-            error = stderr.decode().strip()
+            error = stderr.decode(errors='ignore').strip()
             if not error and remote_type == "drive" and self._use_service_accounts:
                 error = "Mostly your service accounts don't have access to this drive!"
             LOGGER.error(error)
@@ -241,7 +241,7 @@ class RcloneTransferHelper:
         elif return_code == 0:
             return True
         else:
-            error = stderr.decode().strip()
+            error = stderr.decode(errors='ignore').strip()
             LOGGER.error(error)
             if (
                 self._sa_number != 0
@@ -435,7 +435,7 @@ class RcloneTransferHelper:
                     return None, destination
 
         else:
-            error = stderr.decode().strip()
+            error = stderr.decode(errors='ignore').strip()
             LOGGER.error(error)
             await self._listener.on_upload_error(error[:4000])
             return None, None

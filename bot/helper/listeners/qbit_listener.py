@@ -3,6 +3,7 @@ from asyncio import sleep, TimeoutError
 from time import time
 from aiohttp.client_exceptions import ClientError
 from aioqbt.exc import AQError
+from tenacity import retry, wait_exponential, stop_after_attempt, RetryError
 
 from ... import (
     task_dict,
@@ -99,12 +100,25 @@ async def _on_download_complete(tor):
         await _remove_torrent(ext_hash, tag)
 
 
+@retry(
+    wait=wait_exponential(multiplier=1, min=2, max=10),
+    stop=stop_after_attempt(3),
+    retry=(
+        retry_if_exception_type(ClientError)
+        | retry_if_exception_type(TimeoutError)
+        | retry_if_exception_type(AQError)
+    ),
+)
+async def get_torrents_info():
+    return await TorrentManager.qbittorrent.torrents.info()
+
+
 @new_task
 async def _qb_listener():
     while True:
         async with qb_listener_lock:
             try:
-                torrents = await TorrentManager.qbittorrent.torrents.info()
+                torrents = await get_torrents_info()
                 if len(torrents) == 0:
                     intervals["qb"] = ""
                     break
@@ -181,8 +195,10 @@ async def _qb_listener():
                         qb_torrents[tag]["seeding"] = False
                         await _on_seed_finish(tor_info)
                         await sleep(0.5)
-            except (ClientError, TimeoutError, Exception, AQError) as e:
-                LOGGER.error(str(e))
+            except RetryError as e:
+                LOGGER.warning(f"qBittorrent polling failed after multiple retries: {e}")
+            except Exception as e:
+                LOGGER.error(f"An unexpected error occurred in qb_listener: {e}")
         await sleep(3)
 
 
