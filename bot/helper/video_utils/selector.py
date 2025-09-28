@@ -36,7 +36,6 @@ class SelectMode():
         self.message_event = Event()
         self.is_cancelled = False
 
-    @sync_to_async
     async def _event_handler(self):
         pfunc = partial(cb_vidtools, obj=self)
         handler = self.listener.client.add_handler(CallbackQueryHandler(pfunc, filters=regex('^vidtool') & user(self.listener.user_id)), group=-1)
@@ -198,8 +197,7 @@ class SelectMode():
         await self._send_message(self._captions(mode), buttons.build_menu(bnum, 3))
 
     async def get_buttons(self):
-        future = self._event_handler()
-        await gather(self.list_buttons(), wrap_future(future))
+        await gather(self.list_buttons(), self._event_handler())
         if self.is_cancelled:
             await editMessage(self.mode, self._reply)
             return

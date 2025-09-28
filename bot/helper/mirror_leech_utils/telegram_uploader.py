@@ -254,9 +254,9 @@ class TelegramUploader:
                     return
                 dir_path = ospath.dirname(f_path)
                 base_name = ospath.basename(f_path)
-                split_files = [f for f in await listdir(dir_path) if f.startswith(f"{base_name}.part")]
-                files_to_upload.pop(i)
-                files_to_upload.extend([ospath.join(dir_path, f) for f in natsorted(split_files)])
+                split_files = natsorted([f for f in await listdir(dir_path) if f.startswith(f"{base_name}.part")])
+                split_paths = [ospath.join(dir_path, f) for f in split_files]
+                files_to_upload[i:i+1] = split_paths
                 self._listener.total_parts += len(split_files) - 1
                 await remove(f_path)
             else:
