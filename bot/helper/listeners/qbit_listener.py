@@ -3,7 +3,13 @@ from asyncio import sleep, TimeoutError
 from time import time
 from aiohttp.client_exceptions import ClientError
 from aioqbt.exc import AQError
-from tenacity import retry, wait_exponential, stop_after_attempt, RetryError
+from tenacity import (
+    retry,
+    wait_exponential,
+    stop_after_attempt,
+    RetryError,
+    retry_if_exception_type,
+)
 
 from ... import (
     task_dict,
@@ -47,7 +53,8 @@ async def _on_seed_finish(tor):
     ext_hash = tor.hash
     LOGGER.info(f"Cancelling Seed: {tor.name}")
     if task := await get_task_by_gid(ext_hash[:12]):
-        msg = f"Seeding stopped with Ratio: {round(tor.ratio, 3)} and Time: {get_readable_time(int(tor.seeding_time.total_seconds() or "0"))}"
+        seeding_time = tor.seeding_time.total_seconds() if tor.seeding_time else 0
+        msg = f"Seeding stopped with Ratio: {round(tor.ratio, 3)} and Time: {get_readable_time(int(seeding_time))}"
         await task.listener.on_upload_error(msg)
     await _remove_torrent(ext_hash, tor.tags[0])
 
@@ -66,7 +73,8 @@ async def _stop_duplicate(tor):
 
 @new_task
 async def _on_download_complete(tor):
-    ext_hash = tor.hashtag = tor.tags[0]
+    ext_hash = tor.hash
+    tag = tor.tags[0]
     if task := await get_task_by_gid(ext_hash[:12]):
         if task.listener.select:
             await clean_unwanted(task.listener.dir)
@@ -97,7 +105,7 @@ async def _on_download_complete(tor):
         else:
             await _remove_torrent(ext_hash, tag)
     else:
-        await _remove_torrent(ext_hash, tag)
+        await _remove_torrent(tor.hash, tor.tags[0])
 
 
 @retry(
@@ -198,7 +206,7 @@ async def _qb_listener():
             except RetryError as e:
                 LOGGER.warning(f"qBittorrent polling failed after multiple retries: {e}")
             except Exception as e:
-                LOGGER.error(f"An unexpected error occurred in qb_listener: {e}")
+                LOGGER.error(f"An unexpected error occurred in qb_listener: {e}", exc_info=True)
         await sleep(3)
 
 

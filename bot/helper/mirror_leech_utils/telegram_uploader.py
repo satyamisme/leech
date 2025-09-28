@@ -1,6 +1,7 @@
 from PIL import Image
 from aioshutil import rmtree
 from asyncio import sleep
+from collections import deque
 from logging import getLogger
 from natsort import natsorted
 from os import walk, path as ospath
@@ -31,6 +32,7 @@ from bot.core.config_manager import Config
 from bot.core.mltb_client import TgClient
 from bot.helper.ext_utils.bot_utils import sync_to_async
 from bot.helper.ext_utils.files_utils import is_archive, get_base_name, split_file
+from ..ext_utils.mkvmerge_utils import split_video_if_needed
 from bot.helper.telegram_helper.message_utils import delete_message
 from bot.helper.ext_utils.media_utils import (
     get_media_info,
@@ -241,29 +243,46 @@ class TelegramUploader:
         self._listener.total_parts = len(files_to_upload)
         self._listener.current_part = 1
 
-        i = 0
-        while i < len(files_to_upload):
-            f_path = files_to_upload[i]
+        upload_queue = deque(files_to_upload)
+
+        while upload_queue:
+            f_path = upload_queue.popleft()
             if self._listener.is_cancelled:
                 return
 
             f_size = await aiopath.getsize(f_path)
-            if f_size > 2097152000 and not f_path.endswith('.zip'):
-                LOGGER.info(f"Splitting file: {f_path}")
-                if not await split_file(f_path, f_size, ospath.basename(f_path), self._listener):
-                    return
-                dir_path = ospath.dirname(f_path)
-                base_name = ospath.basename(f_path)
-                split_files = natsorted([f for f in await listdir(dir_path) if f.startswith(f"{base_name}.part")])
-                split_paths = [ospath.join(dir_path, f) for f in split_files]
-                files_to_upload[i:i+1] = split_paths
-                self._listener.total_parts += len(split_files) - 1
-                await remove(f_path)
+            if f_size > self._listener.max_split_size and not f_path.endswith('.zip'):
+                is_video, _, _ = await get_document_type(f_path)
+                split_succeeded = False
+                if is_video:
+                    LOGGER.info(f"Splitting video with mkvmerge: {f_path}")
+                    parts = await split_video_if_needed(f_path, self._listener.max_split_size)
+                    if len(parts) > 1:
+                        upload_queue.extendleft(reversed(parts))
+                        self._listener.total_parts += len(parts) - 1
+                        split_succeeded = True
+
+                if not split_succeeded:
+                    LOGGER.info(f"Splitting with 'split' command: {f_path}")
+                    if await split_file(f_path, f_size, ospath.basename(f_path), self._listener):
+                        dir_path = ospath.dirname(f_path)
+                        base_name = ospath.basename(f_path)
+                        parts = natsorted([ospath.join(dir_path, f) for f in await listdir(dir_path) if f.startswith(f"{base_name}.part")])
+                        upload_queue.extendleft(reversed(parts))
+                        self._listener.total_parts += len(parts) - 1
+                        split_succeeded = True
+
+                if split_succeeded:
+                    await remove(f_path)
+                else:
+                    LOGGER.error(f"Splitting failed for {f_path}. Uploading as a single file.")
+                    async for sent_message in self._upload_a_file(f_path):
+                        yield sent_message
+                    self._listener.current_part += 1
             else:
                 async for sent_message in self._upload_a_file(f_path):
                     yield sent_message
                 self._listener.current_part += 1
-                i += 1
 
         if self._total_files <= self._corrupted:
             await self._listener.on_upload_error(

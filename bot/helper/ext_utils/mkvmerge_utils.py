@@ -43,7 +43,7 @@ async def split_video_if_needed(file_path: str, max_tg_size: int = 2000000000) -
     current_split_size = max_tg_size - BUFFER_BYTES
 
     # Set a reasonable minimum to avoid infinite loops on problematic files
-    min_split_size = 100 * 1024 * 1024 # 100MB
+    min_split_size = 100 * 1000 * 1000 # 100MB
 
     while current_split_size >= min_split_size:
         LOGGER.info(f"✂️ Attempting to split with size: {current_split_size // 1000000}MB")
@@ -70,7 +70,7 @@ async def split_video_if_needed(file_path: str, max_tg_size: int = 2000000000) -
             # More likely, mkvmerge failed to split for other reasons.
             LOGGER.warning(f"No split occurred at {current_split_size // 1000000}MB. This might indicate an issue with the file.")
             # Reduce size and retry as a fallback
-            current_split_size -= 50 * 1024 * 1024 # Reduce by 50MB
+            current_split_size -= 10 * 1000 * 1000 # Reduce by 10MB
             continue
 
         # Check if any part is oversized
