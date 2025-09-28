@@ -3,7 +3,7 @@ from aioshutil import rmtree
 from asyncio import sleep
 from logging import getLogger
 from natsort import natsorted
-from os import walk, path as ospath
+from os import walk, path as ospath, listdir
 from time import time
 from re import match as re_match, sub as re_sub
 from pyrogram.errors import FloodWait, RPCError, FloodPremiumWait, BadRequest
@@ -11,7 +11,6 @@ from aiofiles.os import (
     remove,
     path as aiopath,
     rename,
-    listdir,
 )
 from pyrogram.types import (
     InputMediaVideo,
@@ -252,16 +251,16 @@ class TelegramUploader:
                 LOGGER.info(f"Splitting file: {f_path}")
                 if not await split_file(f_path, f_size, self._listener):
                     return
-                # After splitting, we re-scan the directory to upload the parts
                 dir_path = ospath.dirname(f_path)
                 base_name = ospath.basename(f_path)
                 split_files = [f for f in await listdir(dir_path) if f.startswith(f"{base_name}.part")]
                 files_to_upload.pop(i)
                 files_to_upload.extend([ospath.join(dir_path, f) for f in natsorted(split_files)])
                 self._listener.total_parts += len(split_files) - 1
-                await remove(f_path) # remove original large file
+                await remove(f_path)
             else:
-                await self._upload_a_file(f_path)
+                async for sent_message in self._upload_a_file(f_path):
+                    yield sent_message
                 self._listener.current_part += 1
                 i += 1
 
@@ -487,7 +486,8 @@ class TelegramUploader:
                 and await aiopath.exists(thumb)
             ):
                 await remove(thumb)
-            return await self._upload_file(cap_mono, file, o_path)
+            async for item in self._upload_file(cap_mono, file, o_path):
+                yield item
         except Exception as err:
             if (
                 self._thumb is None
@@ -499,8 +499,10 @@ class TelegramUploader:
             LOGGER.error(f"{err_type}{err}. Path: {self._up_path}")
             if isinstance(err, BadRequest) and key != "documents":
                 LOGGER.error(f"Retrying As Document. Path: {self._up_path}")
-                return await self._upload_file(cap_mono, file, o_path, True)
-            raise err
+                async for item in self._upload_file(cap_mono, file, o_path, True):
+                    yield item
+            else:
+                raise err
 
     @property
     def speed(self):
