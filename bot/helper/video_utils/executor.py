@@ -27,7 +27,7 @@ async def get_metavideo(video_file):
     if rcode != 0:
         LOGGER.error(stderr)
         return {}, {}
-    metadata = literal_eval(stdout)
+    metadata = await sync_to_async(literal_eval, stdout)
     return metadata.get('streams', {}), metadata.get('format', {})
 
 
