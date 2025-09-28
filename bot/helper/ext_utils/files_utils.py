@@ -13,6 +13,7 @@ from aiofiles.os import (
     symlink,
     makedirs as aiomakedirs,
 )
+from json import loads as json_loads, JSONDecodeError
 
 from ... import LOGGER, DOWNLOAD_DIR
 from ...core.torrent_manager import TorrentManager
@@ -303,7 +304,10 @@ async def is_video(path):
     try:
         result = await cmd_exec(["ffprobe", "-hide_banner", "-loglevel", "error", "-print_format", "json", "-show_streams", path])
         if result[0] and result[2] == 0:
-            fields = eval(result[0]).get("streams")
+            try:
+                fields = json_loads(result[0]).get("streams")
+            except JSONDecodeError:
+                fields = None
             if fields is None:
                 return False
             for stream in fields:
@@ -314,44 +318,29 @@ async def is_video(path):
     return False
 
 
-import tarfile
-import zipfile
-import rarfile
-import py7zr
-
 async def extract_archive(file_path, extract_dir):
     """
-    Extracts an archive using Python-native libraries.
-    Args:
-        file_path (str): The path to the archive file.
-        extract_dir (str): The directory where the contents will be extracted.
-    Returns:
-        str: The path to the extracted files, or None if extraction fails.
+    Extracts an archive using the 7z command-line tool.
     """
     try:
         if await aiopath.isdir(extract_dir):
             await aiormtree(extract_dir)
         await aiomakedirs(extract_dir, exist_ok=True)
 
-        if file_path.endswith(('.tar.gz', '.tar.bz2', '.tar.xz', '.tar')):
-            with tarfile.open(file_path, 'r:*') as tar:
-                await sync_to_async(tar.extractall, extract_dir)
-        elif file_path.endswith('.zip'):
-            with zipfile.ZipFile(file_path, 'r') as zf:
-                await sync_to_async(zf.extractall, extract_dir)
-        elif file_path.endswith('.rar'):
-            with rarfile.RarFile(file_path, 'r') as rf:
-                await sync_to_async(rf.extractall, extract_dir)
-        elif file_path.endswith('.7z'):
-            with py7zr.SevenZipFile(file_path, mode='r') as szf:
-                await sync_to_async(szf.extractall, extract_dir)
-        else:
-            raise NotSupportedExtractionArchive(f"Unsupported archive format: {file_path}")
+        cmd = ["7z", "x", f"-o{extract_dir}", file_path, "-aot"]
+        process = await create_subprocess_exec(*cmd, stderr=PIPE, stdout=PIPE)
+        _, stderr = await process.communicate()
+
+        if process.returncode != 0:
+            LOGGER.error(f"Archive extraction failed for {file_path}. Return code: {process.returncode}")
+            if stderr:
+                LOGGER.error(f"stderr: {stderr.decode(errors='ignore')}")
+            return None
 
         LOGGER.info(f"Successfully extracted {file_path} to {extract_dir}")
         files = await listdir(extract_dir)
         if len(files) == 1 and await aiopath.isdir(ospath.join(extract_dir, files[0])):
-            return ospath.join(extract_dir, files[0])
+             return ospath.join(extract_dir, files[0])
         return extract_dir
     except Exception as e:
         LOGGER.error(f"An error occurred during extraction: {e}")

@@ -2,35 +2,12 @@ from bot import LOGGER, task_dict_lock, task_dict, bot_loop
 from bot.core.config_manager import Config
 from bot.helper.ext_utils.files_utils import get_path_size
 from ..mirror_leech_utils.status_utils.ffmpeg_status import FFmpegStatus
-from ..ext_utils.media_utils import FFMpeg
+from ..ext_utils.media_utils import FFMpeg, get_media_info
 import asyncio
 import json
 from time import time
 import os.path as ospath
 from aiofiles.os import rename as aiorename, path as aiopath
-
-async def get_media_info(path):
-    """Get media information using ffprobe with a timeout."""
-    try:
-        process = await asyncio.create_subprocess_exec(
-            'ffprobe', '-hide_banner', '-loglevel', 'error', '-print_format', 'json',
-            '-show_format', '-show_streams', path,
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
-        )
-        try:
-            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=60)
-        except asyncio.TimeoutError:
-            LOGGER.error(f"ffprobe timed out while processing {path}")
-            process.kill()
-            return None
-
-        if process.returncode != 0:
-            LOGGER.error(f"ffprobe error for {path}: {stderr.decode().strip()}")
-            return None
-        return json.loads(stdout)
-    except Exception as e:
-        LOGGER.error(f"Exception in get_media_info for {path}: {e}")
-        return None
 
 async def run_ffmpeg(command, path, listener):
     """Run the generated ffmpeg command and report progress."""

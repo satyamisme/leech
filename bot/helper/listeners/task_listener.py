@@ -5,6 +5,7 @@ from os import path as ospath
 from html import escape
 from re import match as re_match
 from requests import utils as rutils
+from pyrogram.errors import RPCError
 
 from ... import (
     intervals,
