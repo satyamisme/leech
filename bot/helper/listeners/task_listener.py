@@ -95,7 +95,19 @@ class TaskListener(TaskConfig):
 
     async def on_task_created(self):
         self.status_message = await send_message(self.message, "🎬 Analyzing Streams... ⏳")
+        if self.status_message and hasattr(self.status_message, "id"):
+            LOGGER.info(f"Task {self.mid}: Created status message {self.status_message.id}.")
         await self.start_download()
+
+    async def update_and_log_status(self, new_status):
+        if not self.status_message:
+            LOGGER.warning(f"Task {self.mid}: No status message to update with '{new_status}'.")
+            return
+        LOGGER.info(f"Task {self.mid}: Updating status to '{new_status}'.")
+        try:
+            await edit_message(self.status_message, f"**{new_status}**\n\n<code>{self.name}</code>")
+        except Exception as e:
+            LOGGER.error(f"Task {self.mid}: Failed to edit status message: {e}", exc_info=True)
 
     async def start_download(self):
         if (
@@ -208,55 +220,46 @@ class TaskListener(TaskConfig):
             return None
 
     async def on_download_complete(self):
-        try:
-            if self.is_cancelled:
+        if self.is_cancelled:
+            return
+
+        dl_path = f"{self.dir}/{self.name}"
+        up_path = dl_path
+
+        if self.extract and is_archive(up_path):
+            LOGGER.info(f"Extracting archive: {up_path}")
+            up_path = await self.proceed_extract(up_path, self.gid)
+            if not up_path or self.is_cancelled:
                 return
 
-            dl_path = f"{self.dir}/{self.name}"
-            up_path = dl_path
+        if await aiopath.isdir(up_path):
+            LOGGER.info(f"Processing directory: {up_path}")
+            video_files = []
+            for root, _, files in await sync_to_async(ospath.walk, up_path):
+                for f in files:
+                    fp = ospath.join(root, f)
+                    if await is_video(fp):
+                        size = await aiopath.getsize(fp)
+                        video_files.append((fp, size))
+            if not video_files:
+                await self.on_upload_error("No video files found in the extracted folder.")
+                return
 
-            if self.extract and is_archive(up_path):
-                LOGGER.info(f"Extracting archive: {up_path}")
-                up_path = await self.proceed_extract(up_path, self.gid)
-                if not up_path or self.is_cancelled:
-                    return
-
-            if await aiopath.isdir(up_path):
-                LOGGER.info(f"Processing directory: {up_path}")
-                video_files = []
-                for root, _, files in await sync_to_async(ospath.walk, up_path):
-                    for f in files:
-                        fp = ospath.join(root, f)
-                        if await is_video(fp):
-                            size = await aiopath.getsize(fp)
-                            video_files.append((fp, size))
-                if not video_files:
-                    await self.on_upload_error("No video files found in the extracted folder.")
-                    return
-
-                video_files.sort(key=lambda x: x[1], reverse=True)
-                self.total_parts = len(video_files)
-                self.current_part = 1
-                for video_file, _ in video_files:
-                    self.name = ospath.basename(video_file)
-                    self.original_name = self.name
-                    await self._process_single_video(video_file)
-                    self.current_part += 1
-            else:
+            video_files.sort(key=lambda x: x[1], reverse=True)
+            self.total_parts = len(video_files)
+            self.current_part = 1
+            for video_file, _ in video_files:
+                self.name = ospath.basename(video_file)
                 self.original_name = self.name
-                await self._process_single_video(up_path)
+                await self._process_single_video(video_file)
+                self.current_part += 1
+        else:
+            self.original_name = self.name
+            await self._process_single_video(up_path)
 
-            await clean_download(self.dir)
-            if hasattr(self, 'up_dir') and self.up_dir:
-                await clean_download(self.up_dir)
-        finally:
-            async with task_dict_lock:
-                if self.mid in task_dict:
-                    del task_dict[self.mid]
-            try:
-                await update_status_message(self.message.chat.id)
-            except Exception as e:
-                LOGGER.error(f"Status update failed: {e}", exc_info=True)
+        await clean_download(self.dir)
+        if hasattr(self, 'up_dir') and self.up_dir:
+            await clean_download(self.up_dir)
 
     async def _process_single_video(self, up_path):
         from ..mirror_leech_utils.telegram_uploader import TelegramUploader
@@ -283,18 +286,6 @@ class TaskListener(TaskConfig):
                 return
             if sent_message:
                 await self._send_leech_completion_message(sent_message)
-
-    async def _update_ffmpeg_progress(self):
-        if self.status_message is None:
-            return
-        async with task_dict_lock:
-            if self.mid in task_dict:
-                task = task_dict[self.mid]
-                progress = task.progress()
-                text = f"🎬 **Processing Video:** `{self.name}` 🔄\n{get_progress_bar_string(progress)} {progress}"
-                if self.last_progress_text != text:
-                    self.last_progress_text = text
-                    await edit_message(self.status_message, text)
 
     def _format_stream_info(self, stream, stream_type):
         details = []
@@ -402,8 +393,6 @@ class TaskListener(TaskConfig):
             msg += f"\n\n<b>Name:</b> <code>{self.name}</code>"
             msg += f"\n<b>Size:</b> {get_readable_file_size(self.size)}"
             msg += f"\n\n<b>cc:</b> {self.tag}"
-            if self.status_message:
-                await delete_message(self.status_message)
             buttons = ButtonMaker()
             if link:
                 buttons.url_button("Cloud Link", link)
@@ -419,6 +408,10 @@ class TaskListener(TaskConfig):
                 return
             await clean_download(self.dir)
         finally:
+            if self.status_message:
+                if hasattr(self.status_message, "id"):
+                    LOGGER.info(f"Task {self.mid}: Deleting status message {self.status_message.id} on upload completion.")
+                await delete_message(self.status_message)
             async with task_dict_lock:
                 if self.mid in task_dict:
                     del task_dict[self.mid]
@@ -440,6 +433,10 @@ class TaskListener(TaskConfig):
         await self.remove_from_same_dir()
         msg = f"{self.tag} Download: {escape(str(error))}"
         await send_message(self.message, msg, button)
+        if self.status_message:
+            if hasattr(self.status_message, "id"):
+                LOGGER.info(f"Task {self.mid}: Deleting status message {self.status_message.id} on download error.")
+            await delete_message(self.status_message)
         if count == 0:
             await self.clean()
         else:
@@ -471,6 +468,10 @@ class TaskListener(TaskConfig):
                 del task_dict[self.mid]
             count = len(task_dict)
         await send_message(self.message, f"{self.tag} {escape(str(error))}")
+        if self.status_message:
+            if hasattr(self.status_message, "id"):
+                LOGGER.info(f"Task {self.mid}: Deleting status message {self.status_message.id} on upload error.")
+            await delete_message(self.status_message)
         if count == 0:
             await self.clean()
         else:

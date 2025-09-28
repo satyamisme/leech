@@ -43,9 +43,6 @@ async def run_ffmpeg(command, path, listener):
     """Run the generated ffmpeg command and report progress."""
     ffmpeg = FFMpeg(listener)
 
-    async with task_dict_lock:
-        task_dict[listener.mid] = FFmpegStatus(listener, ffmpeg, listener.mid, "Processing")
-
     processed_path = await ffmpeg.run_command(command, path)
 
     if processed_path:
@@ -61,6 +58,7 @@ async def run_ffmpeg(command, path, listener):
 async def process_video(path, listener):
     """Main function to process the video based on user's final logic."""
     LOGGER.info("Starting video processing for: %s", path)
+    await listener.update_and_log_status("Processing with FFmpeg...")
 
     if hasattr(listener, 'streams_kept') and listener.streams_kept:
         LOGGER.info("Streams already processed by manual selection, skipping automatic processing.")
