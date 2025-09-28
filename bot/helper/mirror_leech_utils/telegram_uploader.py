@@ -253,26 +253,21 @@ class TelegramUploader:
             f_size = await aiopath.getsize(f_path)
             if f_size > self._listener.max_split_size and not f_path.endswith('.zip'):
                 is_video, _, _ = await get_document_type(f_path)
-                split_succeeded = False
-                if is_video:
+                parts = []
+                if is_video and f_path.endswith(".mkv"):
                     LOGGER.info(f"Splitting video with mkvmerge: {f_path}")
                     parts = await split_video_if_needed(f_path, self._listener.max_split_size)
-                    if len(parts) > 1:
-                        upload_queue.extendleft(reversed(parts))
-                        self._listener.total_parts += len(parts) - 1
-                        split_succeeded = True
 
-                if not split_succeeded:
+                if not parts:
                     LOGGER.info(f"Splitting with 'split' command: {f_path}")
                     if await split_file(f_path, f_size, ospath.basename(f_path), self._listener):
                         dir_path = ospath.dirname(f_path)
                         base_name = ospath.basename(f_path)
                         parts = natsorted([ospath.join(dir_path, f) for f in await listdir(dir_path) if f.startswith(f"{base_name}.part")])
-                        upload_queue.extendleft(reversed(parts))
-                        self._listener.total_parts += len(parts) - 1
-                        split_succeeded = True
 
-                if split_succeeded:
+                if parts:
+                    upload_queue.extendleft(reversed(parts))
+                    self._listener.total_parts += len(parts) - 1
                     await remove(f_path)
                 else:
                     LOGGER.error(f"Splitting failed for {f_path}. Uploading as a single file.")

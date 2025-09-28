@@ -15,10 +15,11 @@ from aiofiles.os import (
 )
 from json import loads as json_loads, JSONDecodeError
 
-from ... import LOGGER, DOWNLOAD_DIR
+from ... import LOGGER, DOWNLOAD_DIR, cpu_no
 from ...core.torrent_manager import TorrentManager
 from .bot_utils import sync_to_async, cmd_exec
 from .exceptions import NotSupportedExtractionArchive
+from .status_utils import time_to_seconds
 
 ARCH_EXT = [
     ".tar.bz2",

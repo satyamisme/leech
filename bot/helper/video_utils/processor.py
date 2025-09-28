@@ -12,6 +12,7 @@ from json import JSONDecodeError
 
 async def get_media_info(path):
     """Get media information using ffprobe with a timeout."""
+    default_info = {"format": {"duration": 0, "tags": {}}, "streams": []}
     try:
         process = await asyncio.create_subprocess_exec(
             'ffprobe', '-hide_banner', '-loglevel', 'error', '-print_format', 'json',
@@ -23,20 +24,20 @@ async def get_media_info(path):
         except asyncio.TimeoutError:
             LOGGER.error(f"ffprobe timed out while processing {path}")
             process.kill()
-            return None
+            return default_info
 
         if process.returncode != 0:
             LOGGER.error(f"ffprobe error for {path}: {stderr.decode(errors='ignore').strip()}")
-            return None
+            return default_info
 
         try:
             return json.loads(stdout)
         except JSONDecodeError:
-            LOGGER.error(f"Failed to parse ffprobe output: {stdout.decode().strip()}")
-            return None
+            LOGGER.error(f"Failed to parse ffprobe output: {stdout.decode(errors='ignore').strip()}")
+            return default_info
     except Exception as e:
-        LOGGER.error(f"Exception in get_media_info for {path}: {e}")
-        return None
+        LOGGER.error(f"Exception in get_media_info for {path}: {e}", exc_info=True)
+        return default_info
 
 async def run_ffmpeg(command, path, listener):
     """Run the generated ffmpeg command and report progress."""
