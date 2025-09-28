@@ -284,7 +284,7 @@ async def split_file(path, size, file_, listener):
     process = await create_subprocess_exec(*cmd, stderr=PIPE, stdout=PIPE)
     _, stderr = await process.communicate()
     if process.returncode != 0:
-        LOGGER.error(f"Error while splitting file: {stderr.decode().strip()}")
+        LOGGER.error(f"Error while splitting file: {stderr.decode(errors='ignore').strip()}")
         return False
     return True
 

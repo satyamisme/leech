@@ -26,7 +26,7 @@ async def get_media_info(path):
             return None
 
         if process.returncode != 0:
-            LOGGER.error(f"ffprobe error for {path}: {stderr.decode().strip()}")
+            LOGGER.error(f"ffprobe error for {path}: {stderr.decode(errors='ignore').strip()}")
             return None
 
         try:

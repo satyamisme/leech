@@ -56,7 +56,7 @@ async def get_media_info(path):
             return 0, None, None
 
         if process.returncode != 0:
-            LOGGER.error(f"ffprobe error while getting media info for {path}: {stderr.decode().strip()}")
+            LOGGER.error(f"ffprobe error while getting media info for {path}: {stderr.decode(errors='ignore').strip()}")
             return 0, None, None
 
         result = stdout.decode().strip()
@@ -109,7 +109,7 @@ async def get_document_type(path):
             return False, False, False
 
         if process.returncode != 0:
-            LOGGER.error(f"ffprobe error while getting document type for {path}: {stderr.decode().strip()}")
+            LOGGER.error(f"ffprobe error while getting document type for {path}: {stderr.decode(errors='ignore').strip()}")
             return False, False, False
 
         result = stdout.decode().strip()
@@ -412,7 +412,7 @@ class FFMpeg:
             return cmd[-1]
         else:
             try:
-                stderr = stderr.decode().strip()
+                stderr = stderr.decode(errors='ignore').strip()
             except:
                 stderr = "Unable to decode the error!"
             LOGGER.error(f"{stderr}. Something went wrong while running ffmpeg cmd. Path: {f_path}")
@@ -463,7 +463,7 @@ class FFMpeg:
             return False
         else:
             try:
-                stderr = stderr.decode().strip()
+                stderr = stderr.decode(errors='ignore').strip()
             except:
                 stderr = "Unable to decode the error!"
             LOGGER.error(
@@ -544,7 +544,7 @@ class FFMpeg:
             if not retry:
                 return await self.convert_video(video_file, ext, True)
             try:
-                stderr = stderr.decode().strip()
+                stderr = stderr.decode(errors='ignore').strip()
             except:
                 stderr = "Unable to decode the error!"
             LOGGER.error(
@@ -587,7 +587,7 @@ class FFMpeg:
             return False
         else:
             try:
-                stderr = stderr.decode().strip()
+                stderr = stderr.decode(errors='ignore').strip()
             except:
                 stderr = "Unable to decode the error!"
             LOGGER.error(
@@ -668,7 +668,7 @@ class FFMpeg:
             return output_file
         else:
             try:
-                stderr = stderr.decode().strip()
+                stderr = stderr.decode(errors='ignore').strip()
             except Exception:
                 stderr = "Unable to decode the error!"
             LOGGER.error(
@@ -733,7 +733,7 @@ class FFMpeg:
                 return False
             elif code != 0:
                 try:
-                    stderr = stderr.decode().strip()
+                    stderr = stderr.decode(errors='ignore').strip()
                 except:
                     stderr = "Unable to decode the error!"
                 try:
