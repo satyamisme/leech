@@ -47,7 +47,13 @@ class TorrentManager:
 
     @classmethod
     async def close_all(cls):
-        await gather(cls.aria2.close(), cls.qbittorrent.close())
+        tasks = []
+        if cls.aria2:
+            tasks.append(cls.aria2.close())
+        if cls.qbittorrent:
+            tasks.append(cls.qbittorrent.close())
+        if tasks:
+            await gather(*tasks)
 
     @classmethod
     async def aria2_remove(cls, download):
