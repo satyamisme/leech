@@ -6,6 +6,8 @@ from html import escape
 from re import match as re_match
 from requests import utils as rutils
 from pyrogram.errors import RPCError
+from time import time
+from datetime import datetime
 
 from ... import (
     intervals,
@@ -23,7 +25,7 @@ from ... import (
 from ...core.config_manager import Config
 from ...core.torrent_manager import TorrentManager
 from ..common import TaskConfig
-from ..ext_utils.bot_utils import sync_to_async, get_content_type
+from ..ext_utils.bot_utils import sync_to_async, get_content_type, SetInterval
 from ..ext_utils.db_handler import database
 from ..ext_utils.exceptions import DirectDownloadLinkException
 from ..ext_utils.files_utils import (
@@ -40,7 +42,7 @@ from ..ext_utils.files_utils import (
     extract_archive,
 )
 from ..ext_utils.links_utils import is_gdrive_id, is_magnet, is_rclone_path, is_gdrive_link
-from ..ext_utils.status_utils import get_readable_file_size
+from ..ext_utils.status_utils import get_readable_file_size, get_progress_bar_string, get_readable_time
 from ..ext_utils.task_manager import start_from_queued, check_running_tasks
 from ..mirror_leech_utils.download_utils.aria2_download import add_aria2_download
 from ..mirror_leech_utils.download_utils.direct_downloader import add_direct_download
@@ -68,14 +70,10 @@ from ..telegram_helper.message_utils import (
     delete_status,
     update_status_message,
     send_status_message,
+    edit_message,
+    delete_message,
+    get_readable_message,
 )
-
-
-from time import time
-from datetime import datetime
-from ..telegram_helper.message_utils import send_message, edit_message, delete_message, get_readable_message
-from ..ext_utils.bot_utils import SetInterval
-from ..ext_utils.status_utils import get_progress_bar_string, get_readable_time
 
 class TaskListener(TaskConfig):
     def __init__(self):
@@ -154,8 +152,8 @@ class TaskListener(TaskConfig):
         elif is_gdrive_link(self.link) or is_gdrive_id(self.link):
             await add_gd_download(self, self.path)
         else:
-            ussr = self.args["-au"]
-            pssw = self.args["-ap"]
+            ussr = self.args.get("-au", "") if self.args else ""
+            pssw = self.args.get("-ap", "") if self.args else ""
             if ussr or pssw:
                 auth = f"{ussr}:{pssw}"
                 self.headers.extend(
@@ -165,7 +163,7 @@ class TaskListener(TaskConfig):
 
     async def clean(self):
         try:
-            if st := intervals["status"]:
+            if st := intervals.get("status"):
                 for intvl in list(st.values()):
                     intvl.cancel()
             intervals["status"].clear()
@@ -183,9 +181,11 @@ class TaskListener(TaskConfig):
     async def remove_from_same_dir(self):
         async with task_dict_lock:
             if (
-                self.folder_name
+                hasattr(self, 'folder_name')
+                and self.folder_name
+                and hasattr(self, 'same_dir')
                 and self.same_dir
-                and self.mid in self.same_dir[self.folder_name]["tasks"]
+                and self.mid in self.same_dir.get(self.folder_name, {}).get("tasks", set())
             ):
                 self.same_dir[self.folder_name]["tasks"].remove(self.mid)
                 self.same_dir[self.folder_name]["total"] -= 1
@@ -214,20 +214,16 @@ class TaskListener(TaskConfig):
         dl_path = f"{self.dir}/{self.name}"
         up_path = dl_path
 
-        # Step 1: Extract if it's a ZIP/RAR
         if self.extract and is_archive(up_path):
             LOGGER.info(f"Extracting archive: {up_path}")
-            # Calling the new extract function
             up_path = await self.proceed_extract(up_path, self.gid)
             if not up_path or self.is_cancelled:
                 return
-            # After extract, up_path is now a directory with extracted files
 
-        # Step 2: If it's a directory (from torrent or extraction), find video files
         if await aiopath.isdir(up_path):
             LOGGER.info(f"Processing directory: {up_path}")
             video_files = []
-            async for root, _, files in aiopath.walk(up_path):
+            for root, _, files in await sync_to_async(ospath.walk, up_path):
                 for f in files:
                     fp = ospath.join(root, f)
                     if await is_video(fp):
@@ -237,21 +233,20 @@ class TaskListener(TaskConfig):
                 await self.on_upload_error("No video files found in the extracted folder.")
                 return
 
-            # Sort by size, largest first
             video_files.sort(key=lambda x: x[1], reverse=True)
-
-            # Process each video file
+            self.total_parts = len(video_files)
+            self.current_part = 1
             for video_file, _ in video_files:
                 self.name = ospath.basename(video_file)
+                self.original_name = self.name
                 await self._process_single_video(video_file)
-
+                self.current_part += 1
         else:
-            # Single file
+            self.original_name = self.name
             await self._process_single_video(up_path)
 
-        # Final cleanup
         await clean_download(self.dir)
-        if self.up_dir:
+        if hasattr(self, 'up_dir') and self.up_dir:
             await clean_download(self.up_dir)
 
     async def _process_single_video(self, up_path):
@@ -263,12 +258,12 @@ class TaskListener(TaskConfig):
             processed_path, media_info = result
             upload_path = processed_path
             self.media_info = media_info
-            self.streams_kept = media_info.get("streams_kept", [])
-            self.streams_removed = media_info.get("streams_removed", [])
+            if media_info:
+                self.streams_kept = media_info.get("streams_kept", [])
+                self.streams_removed = media_info.get("streams_removed", [])
         else:
             upload_path = up_path
 
-        # ✅ Correct order: listener first, then path
         tg_uploader = TelegramUploader(self, upload_path)
         async for sent_message in tg_uploader.upload():
             if self.is_cancelled:
@@ -306,7 +301,6 @@ class TaskListener(TaskConfig):
 
         if stream_type == 'audio':
             layout = stream.get('channel_layout', 'N/A')
-
             bitrate_str = stream.get('bit_rate')
             if not bitrate_str:
                 bitrate_str = stream.get('tags', {}).get('BPS')
@@ -317,7 +311,6 @@ class TaskListener(TaskConfig):
                 bitrate = f"{int(bitrate_str) // 1000}kbps"
             else:
                 bitrate = 'N/A'
-
             return f"<code>{index}. {codec} {lang}, {layout}, {bitrate}</code>"
 
         if stream_type == 'subtitle':
@@ -325,47 +318,30 @@ class TaskListener(TaskConfig):
             return f"<code>{index}. {codec} {lang}, {default}</code>"
 
     async def _send_leech_completion_message(self, sent_message):
-        # This new method only builds and sends the message for a single file.
         name = ospath.basename(sent_message.document.file_name if sent_message.document else sent_message.video.file_name)
         size = sent_message.document.file_size if sent_message.document else sent_message.video.file_size
 
-        total_parts = self.total_parts
-        current_part = self.current_part
-
         msg = f"🎬 <code>{self.name}</code>"
-        msg += f"\n📁 Part {current_part} of {total_parts} | 📂 Total: {get_readable_file_size(self.size)}"
+        msg += f"\n📁 Part {self.current_part} of {self.total_parts} | 📂 Total: {get_readable_file_size(self.size)}"
 
         if self.media_info:
             msg += f" | ⏱️ {get_readable_time(float(self.media_info['format']['duration']))}"
-            # Video info
-            video_stream = next((stream for stream in self.streams_kept if stream['codec_type'] == 'video'), None)
+            video_stream = next((s for s in self.streams_kept if s['codec_type'] == 'video'), None)
             if video_stream:
                 msg += f"\n📊 {video_stream.get('height')}p • {video_stream.get('codec_name')} • "
-
-            # Audio info
-            audio_stream = next((stream for stream in self.streams_kept if stream['codec_type'] == 'audio'), None)
+            audio_stream = next((s for s in self.streams_kept if s['codec_type'] == 'audio'), None)
             if audio_stream:
                 msg += f"{len(self.streams_kept)}A • {audio_stream.get('tags', {}).get('language', 'N/A').upper()} • Split"
-
-            # Source
             msg += f"\n📡 Source: {self.tag}"
-
-            # Original Filename
             msg += f"\n\n📽️ <code>{self.original_name}</code>"
             msg += f"\n📏 {get_readable_file_size(size)} | 📅 {datetime.fromtimestamp(time()).strftime('%d %b %Y')}"
-
-            # Streams Kept
             msg += "\n\n**Streams Kept:**"
             video_streams_kept = [s for s in self.streams_kept if s['codec_type'] == 'video' and s.get('disposition', {}).get('attached_pic') == 0]
             audio_streams_kept = [s for s in self.streams_kept if s['codec_type'] == 'audio']
-
             if video_streams_kept:
-                vid_info = self._format_stream_info(video_streams_kept[0], 'video')
-                msg += f"\n🎥 {vid_info}"
+                msg += f"\n🎥 {self._format_stream_info(video_streams_kept[0], 'video')}"
             for stream in audio_streams_kept:
                 msg += f"\n🔊 {self._format_stream_info(stream, 'audio')}"
-
-            # Streams Removed
             if self.streams_removed:
                 msg += "\n\n**Streams Removed:**"
                 audio_removed = [s for s in self.streams_removed if s['codec_type'] == 'audio']
@@ -374,24 +350,18 @@ class TaskListener(TaskConfig):
                     msg += f"\n🚫 {self._format_stream_info(stream, 'audio')}"
                 for stream in subs_removed:
                     msg += f"\n🚫 {self._format_stream_info(stream, 'subtitle')}"
-
-            # Navigation
-            if current_part > 1:
-                prev_part_name = name.replace(f".part{current_part:02d}", f".part{current_part-1:02d}")
+            if self.current_part > 1:
+                prev_part_name = name.replace(f".part{self.current_part:02d}", f".part{self.current_part-1:02d}")
                 msg += f"\n⬅️ Prev Part: <code>{prev_part_name}</code>"
-            if current_part < total_parts:
-                next_part_name = name.replace(f".part{current_part:02d}", f".part{current_part+1:02d}")
+            if self.current_part < self.total_parts:
+                next_part_name = name.replace(f".part{self.current_part:02d}", f".part{self.current_part+1:02d}")
                 msg += f"\n➡️ Next Part: <code>{next_part_name}</code>"
-
-            # Final Summary
-            msg += f"\n\n✅ Upload Complete (Part {current_part}/{total_parts})"
-            if current_part == total_parts:
+            msg += f"\n\n✅ Upload Complete (Part {self.current_part}/{self.total_parts})"
+            if self.current_part == self.total_parts:
                 msg += "\n✨ All parts uploaded successfully!"
                 msg += f"\n🔗 Files are now available in your chat."
                 msg += f"\n⚡️ {self.tag}"
-
         else:
-            # Fallback for non-media files
             msg = f"🎉 <b>Task Completed by {self.tag}</b>"
             msg += f"\n\n<b>Name:</b> <code>{name}</code>"
             msg += f"\n<b>Size:</b> {get_readable_file_size(size)}"
@@ -402,36 +372,32 @@ class TaskListener(TaskConfig):
             buttons.url_button("Download Link", sent_message.link)
         reply_markup = buttons.build_menu(2) if buttons._button else None
         try:
-            await send_message(sent_message, msg, reply_markup)
+            await send_message(self.message, msg, reply_markup)
         except RPCError as e:
             LOGGER.error(f"Failed to send completion message: {e}")
             if "BUTTON_URL_INVALID" in str(e) and sent_message.link:
                 LOGGER.warning("Retrying without the button...")
-                await send_message(sent_message, msg)
+                await send_message(self.message, msg)
 
     async def on_upload_complete(
         self, link, files, folders, mime_type, rclone_path="", dir_id="", tg_sent_messages=None
     ):
-        # This method is now primarily for GDrive/Rclone uploads.
         if self.is_super_chat and Config.INCOMPLETE_TASK_NOTIFIER and Config.DATABASE_URL:
             await database.rm_complete_task(self.message.link)
-
         msg = f"🎉 <b>Task Completed by {self.tag}</b>"
         msg += f"\n\n<b>Name:</b> <code>{self.name}</code>"
         msg += f"\n<b>Size:</b> {get_readable_file_size(self.size)}"
         msg += f"\n\n<b>cc:</b> {self.tag}"
-
         if self.status_message:
             await delete_message(self.status_message)
-
         buttons = ButtonMaker()
         if link:
             buttons.url_button("Cloud Link", link)
         reply_markup = buttons.build_menu(2) if buttons._button else None
         await send_message(self.message, msg, reply_markup)
-
         if self.seed:
-            await clean_target(self.up_dir)
+            if hasattr(self, 'up_dir'):
+                await clean_target(self.up_dir)
             async with queue_dict_lock:
                 if self.mid in non_queued_up:
                     non_queued_up.remove(self.mid)
@@ -446,11 +412,9 @@ class TaskListener(TaskConfig):
             await self.clean()
         else:
             await update_status_message(self.message.chat.id)
-
         async with queue_dict_lock:
             if self.mid in non_queued_up:
                 non_queued_up.remove(self.mid)
-
         await start_from_queued()
 
     async def on_download_error(self, error, button=None):
@@ -465,14 +429,8 @@ class TaskListener(TaskConfig):
             await self.clean()
         else:
             await update_status_message(self.message.chat.id)
-
-        if (
-            self.is_super_chat
-            and Config.INCOMPLETE_TASK_NOTIFIER
-            and Config.DATABASE_URL
-        ):
+        if self.is_super_chat and Config.INCOMPLETE_TASK_NOTIFIER and Config.DATABASE_URL:
             await database.rm_complete_task(self.message.link)
-
         async with queue_dict_lock:
             if self.mid in queued_dl:
                 queued_dl[self.mid].set()
@@ -484,11 +442,10 @@ class TaskListener(TaskConfig):
                 non_queued_dl.remove(self.mid)
             if self.mid in non_queued_up:
                 non_queued_up.remove(self.mid)
-
         await start_from_queued()
         await sleep(3)
         await clean_download(self.dir)
-        if self.up_dir:
+        if hasattr(self, 'up_dir') and self.up_dir:
             await clean_download(self.up_dir)
         if self.thumb and await aiopath.exists(self.thumb):
             await remove(self.thumb)
@@ -503,14 +460,8 @@ class TaskListener(TaskConfig):
             await self.clean()
         else:
             await update_status_message(self.message.chat.id)
-
-        if (
-            self.is_super_chat
-            and Config.INCOMPLETE_TASK_NOTIFIER
-            and Config.DATABASE_URL
-        ):
+        if self.is_super_chat and Config.INCOMPLETE_TASK_NOTIFIER and Config.DATABASE_URL:
             await database.rm_complete_task(self.message.link)
-
         async with queue_dict_lock:
             if self.mid in queued_dl:
                 queued_dl[self.mid].set()
@@ -522,11 +473,10 @@ class TaskListener(TaskConfig):
                 non_queued_dl.remove(self.mid)
             if self.mid in non_queued_up:
                 non_queued_up.remove(self.mid)
-
         await start_from_queued()
         await sleep(3)
         await clean_download(self.dir)
-        if self.up_dir:
+        if hasattr(self, 'up_dir') and self.up_dir:
             await clean_download(self.up_dir)
         if self.thumb and await aiopath.exists(self.thumb):
             await remove(self.thumb)

@@ -5,6 +5,7 @@ from asyncio import (
     gather,
     wait_for,
     sleep,
+    TimeoutError,
 )
 from asyncio.subprocess import PIPE
 from json import JSONDecodeError, loads as json_loads
@@ -127,7 +128,10 @@ async def get_document_type(path):
                     is_video = True
             elif stream.get("codec_type") == "audio":
                 is_audio = True
-    return is_video, is_audio, is_image
+        return is_video, is_audio, is_image
+    except Exception as e:
+        LOGGER.error(f"Exception in get_document_type for {path}: {e}")
+        return False, False, False
 
 
 async def take_ss(video_file, ss_nb) -> bool:
