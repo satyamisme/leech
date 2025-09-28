@@ -2,12 +2,41 @@ from bot import LOGGER, task_dict_lock, task_dict, bot_loop
 from bot.core.config_manager import Config
 from bot.helper.ext_utils.files_utils import get_path_size
 from ..mirror_leech_utils.status_utils.ffmpeg_status import FFmpegStatus
-from ..ext_utils.media_utils import FFMpeg, get_media_info
+from ..ext_utils.media_utils import FFMpeg
 import asyncio
 import json
 from time import time
 import os.path as ospath
 from aiofiles.os import rename as aiorename, path as aiopath
+from json import JSONDecodeError
+
+async def get_media_info(path):
+    """Get media information using ffprobe with a timeout."""
+    try:
+        process = await asyncio.create_subprocess_exec(
+            'ffprobe', '-hide_banner', '-loglevel', 'error', '-print_format', 'json',
+            '-show_format', '-show_streams', path,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+        )
+        try:
+            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=60)
+        except asyncio.TimeoutError:
+            LOGGER.error(f"ffprobe timed out while processing {path}")
+            process.kill()
+            return None
+
+        if process.returncode != 0:
+            LOGGER.error(f"ffprobe error for {path}: {stderr.decode().strip()}")
+            return None
+
+        try:
+            return json.loads(stdout)
+        except JSONDecodeError:
+            LOGGER.error(f"Failed to parse ffprobe output: {stdout.decode().strip()}")
+            return None
+    except Exception as e:
+        LOGGER.error(f"Exception in get_media_info for {path}: {e}")
+        return None
 
 async def run_ffmpeg(command, path, listener):
     """Run the generated ffmpeg command and report progress."""
@@ -34,13 +63,16 @@ async def process_video(path, listener):
 
     if hasattr(listener, 'streams_kept') and listener.streams_kept:
         LOGGER.info("Streams already processed by manual selection, skipping automatic processing.")
-        return path
+        # If streams are manually selected, we still need media_info for the completion message.
+        if not listener.media_info:
+             listener.media_info = await get_media_info(path)
+        return path, listener.media_info
 
     listener.original_name = ospath.basename(path)
     media_info = await get_media_info(path)
     if not media_info or 'streams' not in media_info:
         await listener.on_upload_error("Could not get media info from the input file.")
-        return None
+        return None, None
 
     all_streams = media_info['streams']
     LOGGER.info("Found %d streams in the media file.", len(all_streams))
@@ -83,7 +115,6 @@ async def process_video(path, listener):
     preferred_langs = [lang_map.get(lang, lang) for lang in raw_preferred_langs if lang]
     LOGGER.info("Using normalized language priority: %s", preferred_langs)
 
-    # Audio stream selection
     selected_audio = []
     found_preferred_audio = False
     for pref_lang in preferred_langs:
@@ -98,7 +129,6 @@ async def process_video(path, listener):
         LOGGER.info("No preferred audio language found, keeping all audio tracks.")
         selected_audio = audio_streams_to_process
 
-    # Subtitle stream selection
     selected_subtitles = []
 
     streams_to_keep_in_ffmpeg = main_video_streams + art_streams + selected_audio
@@ -110,7 +140,7 @@ async def process_video(path, listener):
          kept_indices = {s['index'] for s in streams_to_keep_in_ffmpeg}
          listener.streams_removed = [s for s in all_streams if s['index'] not in kept_indices]
          listener.art_streams = art_streams
-         return path
+         return path, media_info
 
     cmd = ['ffmpeg', '-i', path, '-v', 'error']
     for stream in streams_to_keep_in_ffmpeg:
@@ -144,4 +174,3 @@ async def process_video(path, listener):
         return final_path, media_info
 
     return None, None
-
