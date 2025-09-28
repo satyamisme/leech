@@ -328,7 +328,9 @@ async def cb_extra(_, query: CallbackQuery, obj: ExtraSelect):
                     index, ext = ext_dict[data[3]]
                     obj.extension[index] = ext
                 if value == 'alt':
-                    obj.executor.data['alt_mode'] = not literal_eval(data[3])
+                    obj.executor.data['alt_mode'] = not await sync_to_async(
+                        literal_eval, data[3]
+                    )
                 await obj.update_message(*obj.streams_select())
             else:
                 obj.executor.data.update({'key': int(value) if value.isdigit() else data[2:],

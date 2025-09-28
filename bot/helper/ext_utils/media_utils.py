@@ -753,9 +753,12 @@ class FFMpeg:
                 return False
             out_size = await aiopath.getsize(out_path)
             if out_size > self._listener.max_split_size:
-                split_size -= (out_size - self._listener.max_split_size) + 5000000
+                overshoot_ratio = out_size / self._listener.max_split_size
+                new_split_size = int(split_size / overshoot_ratio) - (10 * 1024 * 1024)
+                min_safe_split = 100 * 1024 * 1024
+                split_size = max(new_split_size, min_safe_split)
                 LOGGER.warning(
-                    f"Part size is {out_size}. Trying again with lower split size!. Path: {f_path}"
+                    f"Part size {out_size} is oversized. Retrying with lower split size: {split_size}. Path: {f_path}"
                 )
                 await remove(out_path)
                 continue
