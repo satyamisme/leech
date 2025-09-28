@@ -16,9 +16,8 @@ from bot.helper.ext_utils.links_utils import get_url_name
 from bot.helper.ext_utils.media_utils import get_document_type, get_media_info, FFProgress
 from bot.helper.ext_utils.task_manager import check_running_tasks
 from bot.helper.listeners import tasks_listener as task
-from bot.helper.mirror_utils.status_utils.ffmpeg_status import FFMpegStatus
 from bot.helper.mirror_utils.status_utils.queue_status import QueueStatus
-from bot.helper.telegram_helper.message_utils import sendStatusMessage, update_status_message
+from bot.helper.telegram_helper.message_utils import update_status_message
 from bot.helper.video_utils.extra_selector import ExtraSelect
 
 
@@ -58,7 +57,7 @@ class VidEcxecutor(FFProgress):
                     task_dict[self.listener.mid] = QueueStatus(self.listener, self.size, self._gid, 'dl')
                 await self.listener.onDownloadStart()
                 if update:
-                    await sendStatusMessage(self.listener.message)
+                    await update_status_message(self.listener.message.chat.id)
                 await event.wait()
                 async with task_dict_lock:
                     if self.listener.mid not in task_dict:
@@ -119,10 +118,7 @@ class VidEcxecutor(FFProgress):
         await ExtraSelect(self).get_buttons(*args)
 
     async def _send_status(self, status='wait'):
-        async with task_dict_lock:
-            task_dict[self.listener.mid] = FFMpegStatus(self.listener, self, self._gid, status)
-        if self._metadata and status == 'wait':
-            await sendStatusMessage(self.listener.message)
+        await self.listener.update_and_log_status(status)
 
     async def _get_files(self):
         file_list = []
