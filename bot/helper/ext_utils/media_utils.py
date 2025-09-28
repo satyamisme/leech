@@ -352,42 +352,50 @@ class FFMpeg:
         self._last_processed_bytes = 0
 
     async def _ffmpeg_progress(self):
+        last_update = time()
         while not (
             self._listener.subproc.returncode is not None
             or self._listener.is_cancelled
             or self._listener.subproc.stdout.at_eof()
         ):
+            if time() - last_update > 15:
+                LOGGER.error(f"FFmpeg stuck for {self._listener.name}. Killing process.")
+                self._listener.subproc.kill()
+                # await self._listener.on_download_error("FFmpeg process hanged!")
+                return
+
             try:
-                line = await wait_for(self._listener.subproc.stdout.readline(), 60)
-            except:
-                break
+                line = await wait_for(self._listener.subproc.stdout.readline(), 1)
+            except TimeoutError:
+                continue
+
             line = line.decode().strip()
-            if not line:
-                break
-            if "=" in line:
-                key, value = line.split("=", 1)
-                if value != "N/A":
-                    if key == "total_size":
-                        self._processed_bytes = int(value) + self._last_processed_bytes
-                        self._speed_raw = self._processed_bytes / (
-                            time() - self._start_time
-                        )
-                    elif key == "speed":
-                        self._time_rate = max(0.1, float(value.strip("x")))
-                    elif key == "out_time":
-                        self._processed_time = (
-                            time_to_seconds(value) + self._last_processed_time
-                        )
-                        try:
-                            self._progress_raw = (
-                                self._processed_time * 100
-                            ) / self._total_time
-                            self._eta_raw = (
-                                self._total_time - self._processed_time
-                            ) / self._time_rate
-                        except:
-                            self._progress_raw = 0
-                            self._eta_raw = 0
+            if line:
+                last_update = time()
+                if "=" in line:
+                    key, value = line.split("=", 1)
+                    if value != "N/A":
+                        if key == "total_size":
+                            self._processed_bytes = int(value) + self._last_processed_bytes
+                            self._speed_raw = self._processed_bytes / (
+                                time() - self._start_time
+                            )
+                        elif key == "speed":
+                            self._time_rate = max(0.1, float(value.strip("x")))
+                        elif key == "out_time":
+                            self._processed_time = (
+                                time_to_seconds(value) + self._last_processed_time
+                            )
+                            try:
+                                self._progress_raw = (
+                                    self._processed_time * 100
+                                ) / self._total_time
+                                self._eta_raw = (
+                                    self._total_time - self._processed_time
+                                ) / self._time_rate
+                            except:
+                                self._progress_raw = 0
+                                self._eta_raw = 0
             await sleep(0.05)
 
     async def run_command(self, cmd, f_path):
