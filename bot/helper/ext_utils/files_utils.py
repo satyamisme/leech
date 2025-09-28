@@ -1,5 +1,5 @@
 from aioshutil import rmtree as aiormtree, move
-from asyncio import create_subprocess_exec, sleep, wait_for
+from asyncio import create_subprocess_exec, sleep, wait_for, TimeoutError
 from asyncio.subprocess import PIPE
 from magic import Magic
 from os import walk, path as ospath, readlink
@@ -313,9 +313,6 @@ async def is_video(path):
 
 
 async def extract_archive(file_path, extract_dir):
-    """
-    Extracts an archive using the 7z command-line tool.
-    """
     try:
         if await aiopath.isdir(extract_dir):
             await aiormtree(extract_dir)

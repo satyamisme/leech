@@ -58,7 +58,6 @@ class ExtraSelect:
         self.executor.data['sdata'] = streams_to_remove
         self.event.set()
 
-    @sync_to_async
     async def _event_handler(self):
         pfunc = partial(cb_extra, obj=self)
         handler = self._listener.client.add_handler(CallbackQueryHandler(pfunc, filters=regex('^extra') & user(self._listener.user_id)), group=-1)
@@ -229,10 +228,10 @@ class ExtraSelect:
         await self.update_message(*self.streams_select(streams))
 
     async def get_buttons(self, *args):
-        future = self._event_handler()
         if extra_mode := getattr(self, f'{self.executor.mode}_select', None):
-            await extra_mode(*args)
-        await wrap_future(future)
+            await gather(extra_mode(*args), self._event_handler())
+        else:
+            await self._event_handler()
         self.executor.event.set()
         await deleteMessage(self._reply)
         if self.is_cancel:

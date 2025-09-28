@@ -54,9 +54,6 @@ from ..mirror_leech_utils.download_utils.jd_download import add_jd_download
 from ..mirror_leech_utils.download_utils.nzb_downloader import add_nzb
 from ..mirror_leech_utils.download_utils.qbit_download import add_qb_torrent
 from ..mirror_leech_utils.download_utils.rclone_download import add_rclone_download
-from ..mirror_leech_utils.download_utils.telegram_download import (
-    TelegramDownloadHelper,
-)
 from ..mirror_leech_utils.gdrive_utils.upload import GoogleDriveUpload
 from ..mirror_leech_utils.rclone_utils.transfer import RcloneTransferHelper
 from ..mirror_leech_utils.status_utils.gdrive_status import GoogleDriveStatus
@@ -136,6 +133,9 @@ class TaskListener(TaskConfig):
 
     async def initiate_download(self):
         if self.file_ is not None:
+            from ..mirror_leech_utils.download_utils.telegram_download import (
+                TelegramDownloadHelper,
+            )
             await TelegramDownloadHelper(self).add_download(
                 self.reply_to, f"{self.path}/", self.session
             )
@@ -253,9 +253,13 @@ class TaskListener(TaskConfig):
         from ..mirror_leech_utils.telegram_uploader import TelegramUploader
         if self.is_leech and not self.compress:
             result = await process_video(up_path, self)
-            if not result or self.is_cancelled:
+            if self.is_cancelled:
+                return
+            if result is None:
                 return
             processed_path, media_info = result
+            if not processed_path:
+                return
             upload_path = processed_path
             self.media_info = media_info
             if media_info:
