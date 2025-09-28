@@ -372,12 +372,12 @@ class TaskListener(TaskConfig):
             buttons.url_button("Download Link", sent_message.link)
         reply_markup = buttons.build_menu(2) if buttons._button else None
         try:
-            await send_message(self.message, msg, reply_markup)
+            await send_message(sent_message, msg, reply_markup)
         except RPCError as e:
             LOGGER.error(f"Failed to send completion message: {e}")
             if "BUTTON_URL_INVALID" in str(e) and sent_message.link:
                 LOGGER.warning("Retrying without the button...")
-                await send_message(self.message, msg)
+                await send_message(sent_message, msg)
 
     async def on_upload_complete(
         self, link, files, folders, mime_type, rclone_path="", dir_id="", tg_sent_messages=None

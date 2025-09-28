@@ -213,9 +213,13 @@ class Mirror(TaskListener):
 
         self.path = f"{DOWNLOAD_DIR}{self.mid}{self.folder_name}"
 
-        if not self.link and (self.reply_to := self.message.reply_to_message):
-            if self.reply_to.text:
-                self.link = self.reply_to.text.split("\n", 1)[0].strip()
+        if not self.link:
+            reply_to = self.message.reply_to_message
+            if reply_to is not None:
+                self.reply_to = reply_to
+                if reply_to.text:
+                    self.link = reply_to.text.split("\n", 1)[0].strip()
+
         if is_telegram_link(self.link):
             try:
                 self.reply_to, self.session = await get_tg_link_message(self.link)
@@ -265,8 +269,8 @@ class Mirror(TaskListener):
             )
 
             if self.file_ is None:
-                if reply_text := self.reply_to.text:
-                    self.link = reply_text.split("\n", 1)[0].strip()
+                if self.reply_to.text:
+                    self.link = self.reply_to.text.split("\n", 1)[0].strip()
                 else:
                     self.reply_to = None
             elif self.reply_to.document and (
