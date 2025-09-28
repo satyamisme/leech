@@ -3,7 +3,7 @@ from aioshutil import rmtree
 from asyncio import sleep
 from logging import getLogger
 from natsort import natsorted
-from os import walk, path as ospath, listdir
+from os import walk, path as ospath
 from time import time
 from re import match as re_match, sub as re_sub
 from pyrogram.errors import FloodWait, RPCError, FloodPremiumWait, BadRequest
@@ -11,6 +11,7 @@ from aiofiles.os import (
     remove,
     path as aiopath,
     rename,
+    listdir,
 )
 from pyrogram.types import (
     InputMediaVideo,
@@ -249,7 +250,7 @@ class TelegramUploader:
             f_size = await aiopath.getsize(f_path)
             if f_size > 2097152000 and not f_path.endswith('.zip'):
                 LOGGER.info(f"Splitting file: {f_path}")
-                if not await split_file(f_path, f_size, self._listener):
+                if not await split_file(f_path, f_size, ospath.basename(f_path), self._listener):
                     return
                 dir_path = ospath.dirname(f_path)
                 base_name = ospath.basename(f_path)
