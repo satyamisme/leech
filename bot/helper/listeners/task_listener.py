@@ -315,7 +315,7 @@ class TaskListener(TaskConfig):
             if self.is_cancelled:
                 return
             if sent_message:
-                await self._send_leech_completion_message(sent_message)
+                await self._send_leech_completion_message(sent_message, upload_path)
 
     def _format_stream_info(self, stream, stream_type):
         details = []
@@ -351,7 +351,7 @@ class TaskListener(TaskConfig):
             default = "Default" if stream.get('disposition', {}).get('default') else ""
             return f"{index}. {codec} {lang}, {default}"
 
-    async def _send_leech_completion_message(self, sent_message):
+    async def _send_leech_completion_message(self, sent_message, upload_path):
         name = ospath.basename(sent_message.document.file_name if sent_message.document else sent_message.video.file_name)
         size = sent_message.document.file_size if sent_message.document else sent_message.video.file_size
 
@@ -386,7 +386,8 @@ class TaskListener(TaskConfig):
 
             msg += f"\n📡 Source: {self.tag}"
             msg += f"\n\n📽️ <code>{self.original_name}</code>"
-            msg += f"\n📏 {get_readable_file_size(size)} | 📅 {datetime.fromtimestamp(time()).strftime('%d %b %Y')}"
+            file_mtime = await aiopath.getmtime(upload_path)
+            msg += f"\n📏 {get_readable_file_size(size)} | 📅 {datetime.fromtimestamp(file_mtime).strftime('%d %b %Y')}"
 
             # Streams Kept section
             if video_streams or audio_streams or subtitle_streams:
