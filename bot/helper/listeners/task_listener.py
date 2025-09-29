@@ -351,9 +351,10 @@ class TaskListener(TaskConfig):
             info_line = "📊 "
             video_stream = next((s for s in self.streams_kept if s['codec_type'] == 'video' and s.get('disposition', {}).get('attached_pic') == 0), None)
             audio_streams = [s for s in self.streams_kept if s['codec_type'] == 'audio']
+            subtitle_streams = [s for s in self.streams_kept if s['codec_type'] == 'subtitle']
 
             if video_stream:
-                info_line += f"{video_stream.get('height')}p • {video_stream.get('codec_name')} • "
+                info_line += f"{video_stream.get('height', 'N/A')}p • {video_stream.get('codec_name', 'N/A')} • "
             if audio_streams:
                 info_line += f"{len(audio_streams)}A • "
                 primary_audio_lang = audio_streams[0].get('tags', {}).get('language', 'N/A').upper()
@@ -372,12 +373,23 @@ class TaskListener(TaskConfig):
                 video_streams_kept = [s for s in self.streams_kept if s['codec_type'] == 'video' and s.get('disposition', {}).get('attached_pic') == 0]
                 audio_streams_kept = [s for s in self.streams_kept if s['codec_type'] == 'audio']
                 subtitle_streams_kept = [s for s in self.streams_kept if s['codec_type'] == 'subtitle']
+
                 if video_streams_kept:
                     msg += f"\n🎥 <code>{self._format_stream_info(video_streams_kept[0], 'video')}</code>"
                 for stream in audio_streams_kept:
                     msg += f"\n🔊 <code>{self._format_stream_info(stream, 'audio')}</code>"
                 for stream in subtitle_streams_kept:
                     msg += f"\n📜 <code>{self._format_stream_info(stream, 'subtitle')}</code>"
+
+            # Add album art information if available
+            art_streams = [s for s in getattr(self, 'art_streams', []) if s.get('disposition', {}).get('attached_pic')]
+            if art_streams:
+                msg += "\n\n**Album Art (Metadata Only):**"
+                for stream in art_streams:
+                    codec = stream.get('codec_name', 'N/A')
+                    width = stream.get('width', 'N/A')
+                    height = stream.get('height', 'N/A')
+                    msg += f"\n🖼️ Art: {codec}, {width}x{height}"
 
             if self.streams_removed:
                 msg += "\n\n**Streams Removed:**"
@@ -388,16 +400,23 @@ class TaskListener(TaskConfig):
                 for stream in subs_removed:
                     msg += f"\n🚫 <code>{self._format_stream_info(stream, 'subtitle')}</code>"
 
+            # Add final stream count summary
+            total_streams = len(self.streams_kept) + len(getattr(self, 'art_streams', []))
+            video_count = len([s for s in self.streams_kept if s['codec_type'] == 'video'])
+            audio_count = len([s for s in self.streams_kept if s['codec_type'] == 'audio'])
+            subtitle_count = len([s for s in self.streams_kept if s['codec_type'] == 'subtitle'])
+            msg += f"\n\n📊 **Final:** {total_streams} streams ({video_count}v, {audio_count}a, {subtitle_count}s) | ⚡️ {self.tag}"
+
             msg += f"\n\n✅ Upload Complete (Part {self.current_part}/{self.total_parts})"
             if self.current_part == self.total_parts:
                 msg += "\n✨ All parts uploaded successfully!"
                 msg += f"\n🔗 Files are now available in your chat."
             msg += f"\n⚡️ {self.tag}"
         else:
+            # For non-video files
+            file_ext = name.split('.')[-1].upper() if '.' in name else 'FILE'
             msg = f"🎉 <b>Task Completed by {self.tag}</b>"
-            msg += f"\n\n<b>Name:</b> <code>{name}</code>"
-            msg += f"\n<b>Size:</b> {get_readable_file_size(size)}"
-            msg += f"\n\n<b>cc:</b> {self.tag}"
+            msg += f"\n\n📄 Type: {file_ext} • Size: {get_readable_file_size(size)} | ⚡️ {self.tag}"
 
         buttons = ButtonMaker()
         if sent_message.link:

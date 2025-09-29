@@ -65,6 +65,9 @@ async def process_video(path, listener):
         # If streams are manually selected, we still need media_info for the completion message.
         if not listener.media_info:
              listener.media_info = await get_media_info(path)
+        if listener.media_info and 'streams' in listener.media_info:
+            all_video_streams = [s for s in listener.media_info['streams'] if s.get('codec_type') == 'video']
+            listener.art_streams = [s for s in all_video_streams if s.get('disposition', {}).get('attached_pic')]
         return path, listener.media_info
 
     listener.original_name = ospath.basename(path)
