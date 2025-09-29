@@ -62,7 +62,7 @@ from ..mirror_leech_utils.status_utils.queue_status import QueueStatus
 from ..mirror_leech_utils.status_utils.rclone_status import RcloneStatus
 from ..mirror_leech_utils.status_utils.telegram_status import TelegramStatus
 from ..telegram_helper.button_build import ButtonMaker
-from ..video_utils.processor import process_video, get_media_info
+from ..video_utils.processor import process_video
 from ..telegram_helper.message_utils import (
     send_message,
     delete_status,
@@ -234,40 +234,35 @@ class TaskListener(TaskConfig):
                 if not up_path or self.is_cancelled:
                     return
 
+            files_to_process = []
             if await aiopath.isdir(up_path):
                 LOGGER.info(f"Processing directory: {up_path}")
-                media_files = []
                 for root, _, files in await sync_to_async(ospath.walk, up_path):
                     for f in files:
-                        fp = ospath.join(root, f)
-                        if await is_video(fp) or await is_audio(fp):
-                            size = await aiopath.getsize(fp)
-                            media_files.append((fp, size))
-                if not media_files:
-                    await self.on_upload_error("No video or audio files found in the extracted folder.")
-                    return
-
-                media_files.sort(key=lambda x: x[1], reverse=True)
-                self.total_parts = len(media_files)
-                self.current_part = 1
-                for media_file, _ in media_files:
-                    self.name = ospath.basename(media_file)
-                    self.original_name = self.name
-                    await self._process_single_video(media_file)
-                    self.current_part += 1
+                        files_to_process.append(ospath.join(root, f))
             else:
-                if await is_video(up_path) or await is_audio(up_path):
-                    self.original_name = self.name
-                    await self._process_single_video(up_path)
-                else:
-                    # For non-media files, we skip the processing and upload directly
-                    from ..mirror_leech_utils.telegram_uploader import TelegramUploader
-                    tg_uploader = TelegramUploader(self, up_path)
-                    async for sent_message in tg_uploader.upload():
-                        if self.is_cancelled:
-                            return
-                        if sent_message:
-                            await self._send_leech_completion_message(sent_message)
+                files_to_process.append(up_path)
+
+            if not files_to_process:
+                await self.on_upload_error("No files found to process.")
+                return
+
+            # Recalculate total size for accurate reporting, especially for extracted archives
+            if len(files_to_process) > 1:
+                total_size = 0
+                for f_path in files_to_process:
+                    total_size += await get_path_size(f_path)
+                self.size = total_size
+
+            self.total_parts = len(files_to_process)
+            self.current_part = 1
+            for file_path in files_to_process:
+                self.name = ospath.basename(file_path)
+                self.original_name = self.name
+                await self._process_single_video(file_path)
+                if self.is_cancelled:
+                    return
+                self.current_part += 1
 
             await clean_download(self.dir)
             if hasattr(self, 'up_dir') and self.up_dir:
@@ -293,22 +288,30 @@ class TaskListener(TaskConfig):
 
     async def _process_single_video(self, up_path):
         from ..mirror_leech_utils.telegram_uploader import TelegramUploader
+
+        # Reset media-specific attributes for each file to prevent data carry-over
+        self.media_info = None
+        self.streams_kept = None
+        self.streams_removed = None
+        self.art_streams = None
+
+        upload_path = up_path  # Default to original path
+
         if self.is_leech and not self.compress:
-            result = await process_video(up_path, self)
-            if self.is_cancelled:
-                return
-            if result is None:
-                return
-            processed_path, media_info = result
-            if not processed_path:
-                return
-            upload_path = processed_path
-            self.media_info = media_info
-            if media_info:
-                self.streams_kept = media_info.get("streams_kept", [])
-                self.streams_removed = media_info.get("streams_removed", [])
-        else:
-            upload_path = up_path
+            if await is_video(up_path) or await is_audio(up_path):
+                LOGGER.info(f"Processing media file: {self.name}")
+                result = await process_video(up_path, self)
+                if self.is_cancelled:
+                    return
+                if result and result[0]:  # Check if processing was successful
+                    processed_path, media_info = result
+                    upload_path = processed_path
+                    self.media_info = media_info
+                    if media_info:
+                        self.streams_kept = media_info.get("streams_kept", [])
+                        self.streams_removed = media_info.get("streams_removed", [])
+            else:
+                LOGGER.info(f"Skipping media processing for non-media file: {self.name}")
 
         tg_uploader = TelegramUploader(self, upload_path)
         async for sent_message in tg_uploader.upload():
@@ -354,9 +357,6 @@ class TaskListener(TaskConfig):
     async def _send_leech_completion_message(self, sent_message):
         name = ospath.basename(sent_message.document.file_name if sent_message.document else sent_message.video.file_name)
         size = sent_message.document.file_size if sent_message.document else sent_message.video.file_size
-
-        if not self.media_info:
-            self.media_info = await get_media_info(f"{self.dir}/{name}")
 
         if self.media_info:
             msg = f"🎬 <code>{self.name}</code>"
