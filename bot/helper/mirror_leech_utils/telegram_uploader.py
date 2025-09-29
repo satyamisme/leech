@@ -292,6 +292,9 @@ class TelegramUploader:
             LOGGER.error(f"{self._up_path} not exists! Continue uploading!")
             return
         try:
+            await self._listener.update_and_log_status(
+                f"Uploading... {self._listener.current_part}/{self._listener.total_parts}"
+            )
             f_size = await aiopath.getsize(self._up_path)
             self._total_files += 1
             if f_size == 0:

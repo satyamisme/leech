@@ -220,46 +220,65 @@ class TaskListener(TaskConfig):
             return None
 
     async def on_download_complete(self):
-        if self.is_cancelled:
-            return
-
-        dl_path = f"{self.dir}/{self.name}"
-        up_path = dl_path
-
-        if self.extract and is_archive(up_path):
-            LOGGER.info(f"Extracting archive: {up_path}")
-            up_path = await self.proceed_extract(up_path, self.gid)
-            if not up_path or self.is_cancelled:
+        try:
+            if self.is_cancelled:
                 return
 
-        if await aiopath.isdir(up_path):
-            LOGGER.info(f"Processing directory: {up_path}")
-            video_files = []
-            for root, _, files in await sync_to_async(ospath.walk, up_path):
-                for f in files:
-                    fp = ospath.join(root, f)
-                    if await is_video(fp):
-                        size = await aiopath.getsize(fp)
-                        video_files.append((fp, size))
-            if not video_files:
-                await self.on_upload_error("No video files found in the extracted folder.")
-                return
+            dl_path = f"{self.dir}/{self.name}"
+            up_path = dl_path
 
-            video_files.sort(key=lambda x: x[1], reverse=True)
-            self.total_parts = len(video_files)
-            self.current_part = 1
-            for video_file, _ in video_files:
-                self.name = ospath.basename(video_file)
+            if self.extract and is_archive(up_path):
+                LOGGER.info(f"Extracting archive: {up_path}")
+                up_path = await self.proceed_extract(up_path, self.gid)
+                if not up_path or self.is_cancelled:
+                    return
+
+            if await aiopath.isdir(up_path):
+                LOGGER.info(f"Processing directory: {up_path}")
+                video_files = []
+                for root, _, files in await sync_to_async(ospath.walk, up_path):
+                    for f in files:
+                        fp = ospath.join(root, f)
+                        if await is_video(fp):
+                            size = await aiopath.getsize(fp)
+                            video_files.append((fp, size))
+                if not video_files:
+                    await self.on_upload_error("No video files found in the extracted folder.")
+                    return
+
+                video_files.sort(key=lambda x: x[1], reverse=True)
+                self.total_parts = len(video_files)
+                self.current_part = 1
+                for video_file, _ in video_files:
+                    self.name = ospath.basename(video_file)
+                    self.original_name = self.name
+                    await self._process_single_video(video_file)
+                    self.current_part += 1
+            else:
                 self.original_name = self.name
-                await self._process_single_video(video_file)
-                self.current_part += 1
-        else:
-            self.original_name = self.name
-            await self._process_single_video(up_path)
+                await self._process_single_video(up_path)
 
-        await clean_download(self.dir)
-        if hasattr(self, 'up_dir') and self.up_dir:
-            await clean_download(self.up_dir)
+            await clean_download(self.dir)
+            if hasattr(self, 'up_dir') and self.up_dir:
+                await clean_download(self.up_dir)
+        finally:
+            if self.is_leech:
+                if self.status_message:
+                    if hasattr(self.status_message, "id"):
+                        LOGGER.info(f"Task {self.mid}: Deleting status message {self.status_message.id} on leech completion.")
+                    await delete_message(self.status_message)
+                async with task_dict_lock:
+                    if self.mid in task_dict:
+                        del task_dict[self.mid]
+                    count = len(task_dict)
+                if count == 0:
+                    await self.clean()
+                else:
+                    await update_status_message(self.message.chat.id)
+                async with queue_dict_lock:
+                    if self.mid in non_queued_up:
+                        non_queued_up.remove(self.mid)
+                await start_from_queued()
 
     async def _process_single_video(self, up_path):
         from ..mirror_leech_utils.telegram_uploader import TelegramUploader
