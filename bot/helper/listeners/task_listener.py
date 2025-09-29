@@ -1,4 +1,5 @@
 from aiofiles.os import path as aiopath, listdir, remove
+from aioshutil import rmtree
 from asyncio import sleep, gather
 from base64 import b64encode
 from os import path as ospath, walk
@@ -237,6 +238,10 @@ class TaskListener(TaskConfig):
             files_to_process = []
             if await aiopath.isdir(up_path):
                 LOGGER.info(f"Processing directory: {up_path}")
+                pad_dir = ospath.join(up_path, ".pad")
+                if await aiopath.exists(pad_dir) and await aiopath.isdir(pad_dir):
+                    LOGGER.info(f"Removing torrent padding directory: {pad_dir}")
+                    await rmtree(pad_dir)
                 for root, _, files in await sync_to_async(walk, up_path):
                     for f in files:
                         files_to_process.append(ospath.join(root, f))
@@ -367,8 +372,13 @@ class TaskListener(TaskConfig):
             return f"{index}. {codec} {lang}, {default}"
 
     async def _send_leech_completion_message(self, sent_message, file_mtime):
-        name = ospath.basename(sent_message.document.file_name if sent_message.document else sent_message.video.file_name)
-        size = sent_message.document.file_size if sent_message.document else sent_message.video.file_size
+        media = sent_message.document or sent_message.video
+        if not media or not media.file_name:
+            LOGGER.warning(f"Skipping completion message for non-media type: {sent_message.id}")
+            return
+
+        name = ospath.basename(media.file_name)
+        size = media.file_size
 
         if self.media_info:
             msg = f"🎬 <code>{self.name}</code>"
