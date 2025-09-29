@@ -1,7 +1,7 @@
 from aiofiles.os import path as aiopath, listdir, remove
 from asyncio import sleep, gather
 from base64 import b64encode
-from os import path as ospath
+from os import path as ospath, walk
 from html import escape
 from re import match as re_match
 from requests import utils as rutils
@@ -237,7 +237,7 @@ class TaskListener(TaskConfig):
             files_to_process = []
             if await aiopath.isdir(up_path):
                 LOGGER.info(f"Processing directory: {up_path}")
-                for root, _, files in await sync_to_async(ospath.walk, up_path):
+                for root, _, files in await sync_to_async(walk, up_path):
                     for f in files:
                         files_to_process.append(ospath.join(root, f))
             else:
