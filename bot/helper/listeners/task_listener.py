@@ -309,13 +309,13 @@ class TaskListener(TaskConfig):
     def _format_stream_info(self, stream, stream_type):
         details = []
         if stream_type == 'video':
-            details.append(f"<code>{stream.get('codec_name', 'N/A')}")
+            details.append(f"{stream.get('codec_name', 'N/A')}")
             if 'profile' in stream:
                 details.append(f"{stream['profile']}")
             details.append(f"{stream.get('height')}p")
             if 'r_frame_rate' in stream:
                 fps = stream['r_frame_rate'].split('/')[0]
-                details.append(f"{fps}fps</code>")
+                details.append(f"{fps}fps")
             return ', '.join(details)
 
         index = stream.get('index', 'N/A')
@@ -334,56 +334,65 @@ class TaskListener(TaskConfig):
                 bitrate = f"{int(bitrate_str) // 1000}kbps"
             else:
                 bitrate = 'N/A'
-            return f"<code>{index}. {codec} {lang}, {layout}, {bitrate}</code>"
+            return f"{index}. {codec} {lang}, {layout}, {bitrate}"
 
         if stream_type == 'subtitle':
             default = "Default" if stream.get('disposition', {}).get('default') else ""
-            return f"<code>{index}. {codec} {lang}, {default}</code>"
+            return f"{index}. {codec} {lang}, {default}"
 
     async def _send_leech_completion_message(self, sent_message):
         name = ospath.basename(sent_message.document.file_name if sent_message.document else sent_message.video.file_name)
         size = sent_message.document.file_size if sent_message.document else sent_message.video.file_size
 
-        msg = f"🎬 <code>{self.name}</code>"
-        msg += f"\n📁 Part {self.current_part} of {self.total_parts} | 📂 Total: {get_readable_file_size(self.size)}"
-
         if self.media_info:
-            msg += f" | ⏱️ {get_readable_time(float(self.media_info['format']['duration']))}"
-            video_stream = next((s for s in self.streams_kept if s['codec_type'] == 'video'), None)
+            msg = f"🎬 <code>{self.name}</code>"
+            msg += f"\n📁 Part {self.current_part} of {self.total_parts} | 📂 Total: {get_readable_file_size(self.size)} | ⏱️ {get_readable_time(float(self.media_info['format']['duration']))}"
+
+            info_line = "📊 "
+            video_stream = next((s for s in self.streams_kept if s['codec_type'] == 'video' and s.get('disposition', {}).get('attached_pic') == 0), None)
+            audio_streams = [s for s in self.streams_kept if s['codec_type'] == 'audio']
+
             if video_stream:
-                msg += f"\n📊 {video_stream.get('height')}p • {video_stream.get('codec_name')} • "
-            audio_stream = next((s for s in self.streams_kept if s['codec_type'] == 'audio'), None)
-            if audio_stream:
-                msg += f"{len(self.streams_kept)}A • {audio_stream.get('tags', {}).get('language', 'N/A').upper()} • Split"
+                info_line += f"{video_stream.get('height')}p • {video_stream.get('codec_name')} • "
+            if audio_streams:
+                info_line += f"{len(audio_streams)}A • "
+                primary_audio_lang = audio_streams[0].get('tags', {}).get('language', 'N/A').upper()
+                info_line += f"{primary_audio_lang} • "
+
+            if self.total_parts > 1:
+                info_line += "Split"
+
+            msg += f"\n{info_line.strip(' • ')}"
             msg += f"\n📡 Source: {self.tag}"
             msg += f"\n\n📽️ <code>{self.original_name}</code>"
             msg += f"\n📏 {get_readable_file_size(size)} | 📅 {datetime.fromtimestamp(time()).strftime('%d %b %Y')}"
-            msg += "\n\n**Streams Kept:**"
-            video_streams_kept = [s for s in self.streams_kept if s['codec_type'] == 'video' and s.get('disposition', {}).get('attached_pic') == 0]
-            audio_streams_kept = [s for s in self.streams_kept if s['codec_type'] == 'audio']
-            if video_streams_kept:
-                msg += f"\n🎥 {self._format_stream_info(video_streams_kept[0], 'video')}"
-            for stream in audio_streams_kept:
-                msg += f"\n🔊 {self._format_stream_info(stream, 'audio')}"
+
+            if self.streams_kept:
+                msg += "\n\n**Streams Kept:**"
+                video_streams_kept = [s for s in self.streams_kept if s['codec_type'] == 'video' and s.get('disposition', {}).get('attached_pic') == 0]
+                audio_streams_kept = [s for s in self.streams_kept if s['codec_type'] == 'audio']
+                subtitle_streams_kept = [s for s in self.streams_kept if s['codec_type'] == 'subtitle']
+                if video_streams_kept:
+                    msg += f"\n🎥 <code>{self._format_stream_info(video_streams_kept[0], 'video')}</code>"
+                for stream in audio_streams_kept:
+                    msg += f"\n🔊 <code>{self._format_stream_info(stream, 'audio')}</code>"
+                for stream in subtitle_streams_kept:
+                    msg += f"\n📜 <code>{self._format_stream_info(stream, 'subtitle')}</code>"
+
             if self.streams_removed:
                 msg += "\n\n**Streams Removed:**"
                 audio_removed = [s for s in self.streams_removed if s['codec_type'] == 'audio']
                 subs_removed = [s for s in self.streams_removed if s['codec_type'] == 'subtitle']
                 for stream in audio_removed:
-                    msg += f"\n🚫 {self._format_stream_info(stream, 'audio')}"
+                    msg += f"\n🚫 <code>{self._format_stream_info(stream, 'audio')}</code>"
                 for stream in subs_removed:
-                    msg += f"\n🚫 {self._format_stream_info(stream, 'subtitle')}"
-            if self.current_part > 1:
-                prev_part_name = name.replace(f".part{self.current_part:02d}", f".part{self.current_part-1:02d}")
-                msg += f"\n⬅️ Prev Part: <code>{prev_part_name}</code>"
-            if self.current_part < self.total_parts:
-                next_part_name = name.replace(f".part{self.current_part:02d}", f".part{self.current_part+1:02d}")
-                msg += f"\n➡️ Next Part: <code>{next_part_name}</code>"
+                    msg += f"\n🚫 <code>{self._format_stream_info(stream, 'subtitle')}</code>"
+
             msg += f"\n\n✅ Upload Complete (Part {self.current_part}/{self.total_parts})"
             if self.current_part == self.total_parts:
                 msg += "\n✨ All parts uploaded successfully!"
                 msg += f"\n🔗 Files are now available in your chat."
-                msg += f"\n⚡️ {self.tag}"
+            msg += f"\n⚡️ {self.tag}"
         else:
             msg = f"🎉 <b>Task Completed by {self.tag}</b>"
             msg += f"\n\n<b>Name:</b> <code>{name}</code>"
