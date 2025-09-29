@@ -169,6 +169,9 @@ async def process_video(path, listener):
         listener.streams_removed = [s for s in all_streams if s['index'] not in kept_indices]
 
         LOGGER.info("Final decision: Kept %d streams, Removed %d streams.", len(listener.streams_kept), len(listener.streams_removed))
+        LOGGER.info(f"Task {listener.mid}: Media Info: {media_info}")
+        LOGGER.info(f"Task {listener.mid}: Streams Kept: {listener.streams_kept}")
+        LOGGER.info(f"Task {listener.mid}: Streams Removed: {listener.streams_removed}")
 
         return final_path, media_info
 
