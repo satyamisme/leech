@@ -349,40 +349,53 @@ class TaskListener(TaskConfig):
             msg += f"\n📁 Part {self.current_part} of {self.total_parts} | 📂 Total: {get_readable_file_size(self.size)} | ⏱️ {get_readable_time(float(self.media_info['format']['duration']))}"
 
             info_line = "📊 "
-            video_stream = next((s for s in self.streams_kept if s['codec_type'] == 'video' and s.get('disposition', {}).get('attached_pic') == 0), None)
-            audio_streams = [s for s in self.streams_kept if s['codec_type'] == 'audio']
-            subtitle_streams = [s for s in self.streams_kept if s['codec_type'] == 'subtitle']
 
-            if video_stream:
+            # Get streams information
+            video_streams = [s for s in getattr(self, 'streams_kept', []) if s.get('codec_type') == 'video' and not s.get('disposition', {}).get('attached_pic')]
+            audio_streams = [s for s in getattr(self, 'streams_kept', []) if s.get('codec_type') == 'audio']
+            subtitle_streams = [s for s in getattr(self, 'streams_kept', []) if s.get('codec_type') == 'subtitle']
+            art_streams = getattr(self, 'art_streams', [])
+
+            if video_streams:
+                video_stream = video_streams[0]
                 info_line += f"{video_stream.get('height', 'N/A')}p • {video_stream.get('codec_name', 'N/A')} • "
+
             if audio_streams:
                 info_line += f"{len(audio_streams)}A • "
-                primary_audio_lang = audio_streams[0].get('tags', {}).get('language', 'N/A').upper()
-                info_line += f"{primary_audio_lang} • "
+                # Get primary audio language
+                primary_audio = audio_streams[0]
+                lang_code = primary_audio.get('tags', {}).get('language', 'und')
+                lang_map = {'tel': 'TEL', 'hin': 'HIN', 'tam': 'TAM', 'eng': 'ENG', 'und': 'UND'}
+                primary_lang = lang_map.get(lang_code.lower(), lang_code.upper())
+                info_line += f"{primary_lang} • "
 
             if self.total_parts > 1:
                 info_line += "Split"
+            else:
+                info_line = info_line.strip(' • ')
 
-            msg += f"\n{info_line.strip(' • ')}"
+            msg += f"\n{info_line}"
             msg += f"\n📡 Source: {self.tag}"
             msg += f"\n\n📽️ <code>{self.original_name}</code>"
             msg += f"\n📏 {get_readable_file_size(size)} | 📅 {datetime.fromtimestamp(time()).strftime('%d %b %Y')}"
 
-            if self.streams_kept:
+            # Streams Kept section
+            if video_streams or audio_streams or subtitle_streams:
                 msg += "\n\n**Streams Kept:**"
-                video_streams_kept = [s for s in self.streams_kept if s['codec_type'] == 'video' and s.get('disposition', {}).get('attached_pic') == 0]
-                audio_streams_kept = [s for s in self.streams_kept if s['codec_type'] == 'audio']
-                subtitle_streams_kept = [s for s in self.streams_kept if s['codec_type'] == 'subtitle']
 
-                if video_streams_kept:
-                    msg += f"\n🎥 <code>{self._format_stream_info(video_streams_kept[0], 'video')}</code>"
-                for stream in audio_streams_kept:
-                    msg += f"\n🔊 <code>{self._format_stream_info(stream, 'audio')}</code>"
-                for stream in subtitle_streams_kept:
-                    msg += f"\n📜 <code>{self._format_stream_info(stream, 'subtitle')}</code>"
+                if video_streams:
+                    for stream in video_streams:
+                        msg += f"\n🎥 <code>{self._format_stream_info(stream, 'video')}</code>"
 
-            # Add album art information if available
-            art_streams = [s for s in getattr(self, 'art_streams', []) if s.get('disposition', {}).get('attached_pic')]
+                if audio_streams:
+                    for stream in audio_streams:
+                        msg += f"\n🔊 <code>{self._format_stream_info(stream, 'audio')}</code>"
+
+                if subtitle_streams:
+                    for stream in subtitle_streams:
+                        msg += f"\n📜 <code>{self._format_stream_info(stream, 'subtitle')}</code>"
+
+            # Album Art section
             if art_streams:
                 msg += "\n\n**Album Art (Metadata Only):**"
                 for stream in art_streams:
@@ -391,21 +404,22 @@ class TaskListener(TaskConfig):
                     height = stream.get('height', 'N/A')
                     msg += f"\n🖼️ Art: {codec}, {width}x{height}"
 
-            if self.streams_removed:
+            # Streams Removed section
+            removed_audio = [s for s in getattr(self, 'streams_removed', []) if s.get('codec_type') == 'audio']
+            removed_subs = [s for s in getattr(self, 'streams_removed', []) if s.get('codec_type') == 'subtitle']
+
+            if removed_audio or removed_subs:
                 msg += "\n\n**Streams Removed:**"
-                audio_removed = [s for s in self.streams_removed if s['codec_type'] == 'audio']
-                subs_removed = [s for s in self.streams_removed if s['codec_type'] == 'subtitle']
-                for stream in audio_removed:
+
+                for stream in removed_audio:
                     msg += f"\n🚫 <code>{self._format_stream_info(stream, 'audio')}</code>"
-                for stream in subs_removed:
+
+                for stream in removed_subs:
                     msg += f"\n🚫 <code>{self._format_stream_info(stream, 'subtitle')}</code>"
 
-            # Add final stream count summary
-            total_streams = len(self.streams_kept) + len(getattr(self, 'art_streams', []))
-            video_count = len([s for s in self.streams_kept if s['codec_type'] == 'video'])
-            audio_count = len([s for s in self.streams_kept if s['codec_type'] == 'audio'])
-            subtitle_count = len([s for s in self.streams_kept if s['codec_type'] == 'subtitle'])
-            msg += f"\n\n📊 **Final:** {total_streams} streams ({video_count}v, {audio_count}a, {subtitle_count}s) | ⚡️ {self.tag}"
+            # Final summary
+            total_kept = len(video_streams) + len(audio_streams) + len(subtitle_streams) + len(art_streams)
+            msg += f"\n\n📊 **Final:** {total_kept} streams ({len(video_streams)}v, {len(audio_streams)}a, {len(subtitle_streams)}s) | ⚡️ {self.tag}"
 
             msg += f"\n\n✅ Upload Complete (Part {self.current_part}/{self.total_parts})"
             if self.current_part == self.total_parts:
@@ -415,8 +429,7 @@ class TaskListener(TaskConfig):
         else:
             # For non-video files
             file_ext = name.split('.')[-1].upper() if '.' in name else 'FILE'
-            msg = f"🎉 <b>Task Completed by {self.tag}</b>"
-            msg += f"\n\n📄 Type: {file_ext} • Size: {get_readable_file_size(size)} | ⚡️ {self.tag}"
+            msg = f"📄 Type: {file_ext} • Size: {get_readable_file_size(size)} | ⚡️ {self.tag}"
 
         buttons = ButtonMaker()
         if sent_message.link:
