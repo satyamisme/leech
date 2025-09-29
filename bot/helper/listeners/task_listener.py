@@ -307,9 +307,6 @@ class TaskListener(TaskConfig):
                     processed_path, media_info = result
                     upload_path = processed_path
                     self.media_info = media_info
-                    if media_info:
-                        self.streams_kept = media_info.get("streams_kept", [])
-                        self.streams_removed = media_info.get("streams_removed", [])
             else:
                 LOGGER.info(f"Skipping media processing for non-media file: {self.name}")
 
