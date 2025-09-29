@@ -213,9 +213,9 @@ class TaskListener(TaskConfig):
                 self.message.chat.id, self.message.link, self.tag
             )
 
-    async def proceed_extract(self, up_path, gid):
+    async def proceed_extract(self, up_path, task_id):
         try:
-            return await extract_archive(up_path, f"{self.dir}/{gid}")
+            return await extract_archive(up_path, f"{self.dir}/{task_id}")
         except Exception as e:
             await self.on_upload_error(str(e))
             return None
@@ -230,7 +230,7 @@ class TaskListener(TaskConfig):
 
             if self.extract and is_archive(up_path):
                 LOGGER.info(f"Extracting archive: {up_path}")
-                up_path = await self.proceed_extract(up_path, self.gid)
+                up_path = await self.proceed_extract(up_path, self.mid)
                 if not up_path or self.is_cancelled:
                     return
 
@@ -269,22 +269,30 @@ class TaskListener(TaskConfig):
                 await clean_download(self.up_dir)
         finally:
             if self.is_leech:
-                if self.status_message:
-                    if hasattr(self.status_message, "id"):
-                        LOGGER.info(f"Task {self.mid}: Deleting status message {self.status_message.id} on leech completion.")
-                    await delete_message(self.status_message)
-                async with task_dict_lock:
-                    if self.mid in task_dict:
-                        del task_dict[self.mid]
-                    count = len(task_dict)
-                if count == 0:
-                    await self.clean()
-                else:
-                    await update_status_message(self.message.chat.id)
-                async with queue_dict_lock:
-                    if self.mid in non_queued_up:
-                        non_queued_up.remove(self.mid)
-                await start_from_queued()
+                await self._cleanup_after_leech()
+
+    async def _cleanup_after_leech(self):
+        """Clean up after leech task completion"""
+        if self.status_message:
+            if hasattr(self.status_message, "id"):
+                LOGGER.info(f"Task {self.mid}: Deleting status message {self.status_message.id} on leech completion.")
+            await delete_message(self.status_message)
+
+        async with task_dict_lock:
+            if self.mid in task_dict:
+                del task_dict[self.mid]
+            count = len(task_dict)
+
+        if count == 0:
+            await self.clean()
+        else:
+            await update_status_message(self.message.chat.id)
+
+        async with queue_dict_lock:
+            if self.mid in non_queued_up:
+                non_queued_up.remove(self.mid)
+
+        await start_from_queued()
 
     async def _process_single_video(self, up_path):
         from ..mirror_leech_utils.telegram_uploader import TelegramUploader
