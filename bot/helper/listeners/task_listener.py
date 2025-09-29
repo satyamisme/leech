@@ -318,12 +318,19 @@ class TaskListener(TaskConfig):
             else:
                 LOGGER.info(f"Skipping media processing for non-media file: {self.name}")
 
+        # Get file modification time before upload, as the file might be deleted by the uploader
+        try:
+            file_mtime = await aiopath.getmtime(upload_path)
+        except FileNotFoundError:
+            # This can happen if the file was deleted during processing (e.g., after split)
+            file_mtime = time()
+
         tg_uploader = TelegramUploader(self, upload_path)
         async for sent_message in tg_uploader.upload():
             if self.is_cancelled:
                 return
             if sent_message:
-                await self._send_leech_completion_message(sent_message, upload_path)
+                await self._send_leech_completion_message(sent_message, file_mtime)
 
     def _format_stream_info(self, stream, stream_type):
         details = []
@@ -359,7 +366,7 @@ class TaskListener(TaskConfig):
             default = "Default" if stream.get('disposition', {}).get('default') else ""
             return f"{index}. {codec} {lang}, {default}"
 
-    async def _send_leech_completion_message(self, sent_message, upload_path):
+    async def _send_leech_completion_message(self, sent_message, file_mtime):
         name = ospath.basename(sent_message.document.file_name if sent_message.document else sent_message.video.file_name)
         size = sent_message.document.file_size if sent_message.document else sent_message.video.file_size
 
@@ -394,7 +401,6 @@ class TaskListener(TaskConfig):
 
             msg += f"\n📡 Source: {self.tag}"
             msg += f"\n\n📽️ <code>{self.original_name}</code>"
-            file_mtime = await aiopath.getmtime(upload_path)
             msg += f"\n📏 {get_readable_file_size(size)} | 📅 {datetime.fromtimestamp(file_mtime).strftime('%d %b %Y')}"
 
             # Streams Kept section
