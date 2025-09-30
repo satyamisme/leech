@@ -1,4 +1,5 @@
 from aiofiles.os import path as aiopath, listdir, remove
+from aioshutil import rmtree
 from asyncio import sleep, gather
 from base64 import b64encode
 from os import path as ospath, walk
@@ -37,6 +38,7 @@ from ..ext_utils.files_utils import (
     remove_excluded_files,
     move_and_merge,
     is_video,
+    is_audio,
     is_archive,
     get_base_name,
     extract_archive,
@@ -92,6 +94,9 @@ class TaskListener(TaskConfig):
         self.total_parts = 1
         self.current_part = 1
         self.original_name = ""
+        self.is_series = False
+        self.series_pattern = None
+        self.episode_files = {}
 
     async def on_task_created(self):
         self.status_message = await send_message(self.message, "🎬 Analyzing Streams... ⏳")
@@ -212,12 +217,87 @@ class TaskListener(TaskConfig):
                 self.message.chat.id, self.message.link, self.tag
             )
 
-    async def proceed_extract(self, up_path, gid):
+    async def proceed_extract(self, up_path, task_id):
         try:
-            return await extract_archive(up_path, f"{self.dir}/{gid}")
+            return await extract_archive(up_path, f"{self.dir}/{task_id}")
         except Exception as e:
             await self.on_upload_error(str(e))
             return None
+
+    async def detect_series_structure(self, files):
+        """Detect if files belong to a web series"""
+        episode_patterns = [
+            (r'S(\d+)E(\d+)', 'SxxExx'),
+            (r'[Ss]eason[\s\.]*(\d+)[\s\.]*[Ee]pisode[\s\.]*(\d+)', 'Season X Episode X'),
+            (r'EP?[\s\.]*(\d+)', 'EPxx'),
+            (r'Episode[\s\.]*(\d+)', 'Episode X'),
+            (r'Part[\s\.]*(\d+)', 'Part X'),
+        ]
+
+        episode_counts = {}
+        for pattern, pattern_name in episode_patterns:
+            count = sum(1 for f in files if re_match(pattern, f, re.IGNORECASE))
+            episode_counts[pattern_name] = count
+
+        # If we have multiple files matching episode patterns, it's likely a series
+        most_likely_pattern = max(episode_counts.items(), key=lambda x: x[1])
+        if most_likely_pattern[1] > 1:
+            self.is_series = True
+            self.series_pattern = most_likely_pattern[0]
+            return True
+        return False
+
+    def _extract_episode_number(self, filename):
+        """Extract episode number for ordering"""
+        patterns = [
+            r'S(\d+)E(\d+)',  # S01E01
+            r'[Ss]eason[\s\.]*(\d+)[\s\.]*[Ee]pisode[\s\.]*(\d+)',  # Season 1 Episode 1
+            r'EP?[\s\.]*(\d+)',  # EP01, E01
+            r'Episode[\s\.]*(\d+)',  # Episode 1
+            r'Part[\s\.]*(\d+)',  # Part 1
+        ]
+
+        for pattern in patterns:
+            match = re_match(pattern, filename, re.IGNORECASE)
+            if match:
+                if len(match.groups()) == 2:
+                    return int(match.group(1)) * 1000 + int(match.group(2))
+                else:
+                    return int(match.group(1))
+
+        # Fallback: use the entire filename for sorting
+        return filename
+
+    async def organize_episode_files(self, files):
+        """Organize files by episode number"""
+        for file_path in files:
+            filename = ospath.basename(file_path)
+            episode_num = self._extract_episode_number(filename)
+            if episode_num not in self.episode_files:
+                self.episode_files[episode_num] = []
+            self.episode_files[episode_num].append(file_path)
+
+        # Sort episodes naturally
+        self.episode_files = dict(sorted(self.episode_files.items()))
+
+    async def _get_task_specific_files(self, base_path):
+        """Get files only from this task's directory"""
+        task_files = []
+
+        if await aiopath.isdir(base_path):
+            # Only scan this task's directory
+            for dirpath, _, files in await sync_to_async(walk, base_path):
+                for file_ in natsorted(files):
+                    if file_.endswith(('.aria2', '.!qB')):
+                        continue
+                    full_path = ospath.join(dirpath, file_)
+                    # Ensure file belongs to this task
+                    if full_path.startswith(self.dir):
+                        task_files.append(full_path)
+        elif await aiopath.isfile(base_path):
+            task_files.append(base_path)
+
+        return task_files
 
     async def on_download_complete(self):
         try:
@@ -229,87 +309,136 @@ class TaskListener(TaskConfig):
 
             if self.extract and is_archive(up_path):
                 LOGGER.info(f"Extracting archive: {up_path}")
-                gid = getattr(self, 'gid', self.mid)
-                up_path = await self.proceed_extract(up_path, gid)
+                up_path = await self.proceed_extract(up_path, self.mid)
                 if not up_path or self.is_cancelled:
                     return
 
-            if await aiopath.isdir(up_path):
-                LOGGER.info(f"Processing directory: {up_path}")
-                video_files = []
-                for root, _, files in await sync_to_async(walk, up_path):
-                    if "/.pad" in root:
-                        continue
-                    for f in files:
-                        if f.endswith((".aria2", ".!qB")):
-                            continue
-                        fp = ospath.join(root, f)
-                        if await is_video(fp):
-                            size = await aiopath.getsize(fp)
-                            video_files.append((fp, size))
-                if not video_files:
-                    await self.on_upload_error("No video files found in the extracted folder.")
+            # Get task-specific files only
+            files_to_process = await self._get_task_specific_files(up_path)
+
+            if not files_to_process:
+                await self.on_upload_error("No files found to process.")
+                return
+
+            # Detect and organize series
+            if len(files_to_process) > 1:
+                filenames = [ospath.basename(f) for f in files_to_process]
+                is_series = await self.detect_series_structure(filenames)
+                if is_series:
+                    await self.organize_episode_files(files_to_process)
+                    await self._upload_series_ordered()
                     return
 
-                video_files.sort(key=lambda x: x[1], reverse=True)
-                self.total_parts = len(video_files)
-                self.current_part = 1
-                for video_file, _ in video_files:
-                    self.name = ospath.basename(video_file)
-                    self.original_name = self.name
-                    await self._process_single_video(video_file)
-                    self.current_part += 1
-            else:
+            # Recalculate total size for accurate reporting
+            if len(files_to_process) > 1:
+                total_size = 0
+                for f_path in files_to_process:
+                    total_size += await get_path_size(f_path)
+                self.size = total_size
+
+            self.total_parts = len(files_to_process)
+            self.current_part = 1
+
+            # Process files in natural order
+            for file_path in natsorted(files_to_process):
+                self.name = ospath.basename(file_path)
                 self.original_name = self.name
-                await self._process_single_video(up_path)
+                await self._process_single_video(file_path)
+                if self.is_cancelled:
+                    return
+                self.current_part += 1
 
             await clean_download(self.dir)
             if hasattr(self, 'up_dir') and self.up_dir:
                 await clean_download(self.up_dir)
+
         finally:
             if self.is_leech:
-                if self.status_message:
-                    if hasattr(self.status_message, "id"):
-                        LOGGER.info(f"Task {self.mid}: Deleting status message {self.status_message.id} on leech completion.")
-                    await delete_message(self.status_message)
-                async with task_dict_lock:
-                    if self.mid in task_dict:
-                        del task_dict[self.mid]
-                    count = len(task_dict)
-                if count == 0:
-                    await self.clean()
-                else:
-                    await update_status_message(self.message.chat.id)
-                async with queue_dict_lock:
-                    if self.mid in non_queued_up:
-                        non_queued_up.remove(self.mid)
-                await start_from_queued()
+                await self._cleanup_after_leech()
+
+    async def _upload_series_ordered(self):
+        """Upload series files in episode order"""
+        LOGGER.info(f"Uploading series: {self.name} with {len(self.episode_files)} episodes")
+
+        self.total_parts = sum(len(files) for files in self.episode_files.values())
+        self.current_part = 1
+
+        for episode_num, episode_files in self.episode_files.items():
+            LOGGER.info(f"Processing episode {episode_num}: {len(episode_files)} files")
+
+            # Sort files within episode (for multi-part episodes)
+            sorted_episode_files = natsorted(episode_files)
+
+            for file_path in sorted_episode_files:
+                if self.is_cancelled:
+                    return
+
+                self.name = ospath.basename(file_path)
+                self.original_name = self.name
+                await self._process_single_video(file_path)
+                if self.is_cancelled:
+                    return
+                self.current_part += 1
+
+    async def _cleanup_after_leech(self):
+        """Clean up after leech task completion"""
+        if self.status_message:
+            if hasattr(self.status_message, "id"):
+                LOGGER.info(f"Task {self.mid}: Deleting status message {self.status_message.id} on leech completion.")
+            await delete_message(self.status_message)
+
+        async with task_dict_lock:
+            if self.mid in task_dict:
+                del task_dict[self.mid]
+            count = len(task_dict)
+
+        if count == 0:
+            await self.clean()
+        else:
+            await update_status_message(self.message.chat.id)
+
+        async with queue_dict_lock:
+            if self.mid in non_queued_up:
+                non_queued_up.remove(self.mid)
+
+        await start_from_queued()
 
     async def _process_single_video(self, up_path):
         from ..mirror_leech_utils.telegram_uploader import TelegramUploader
+
+        # Reset media-specific attributes for each file to prevent data carry-over
+        self.media_info = None
+        self.streams_kept = None
+        self.streams_removed = None
+        self.art_streams = None
+
+        upload_path = up_path  # Default to original path
+
         if self.is_leech and not self.compress:
-            result = await process_video(up_path, self)
-            if self.is_cancelled:
-                return
-            if result is None:
-                return
-            processed_path, media_info = result
-            if not processed_path:
-                return
-            upload_path = processed_path
-            self.media_info = media_info
-            if media_info:
-                self.streams_kept = media_info.get("streams_kept", [])
-                self.streams_removed = media_info.get("streams_removed", [])
-        else:
-            upload_path = up_path
+            if await is_video(up_path) or await is_audio(up_path):
+                LOGGER.info(f"Processing media file: {self.name}")
+                result = await process_video(up_path, self)
+                if self.is_cancelled:
+                    return
+                if result and result[0]:  # Check if processing was successful
+                    processed_path, media_info = result
+                    upload_path = processed_path
+                    self.media_info = media_info
+            else:
+                LOGGER.info(f"Skipping media processing for non-media file: {self.name}")
+
+        # Get file modification time before upload
+        try:
+            file_mtime = await aiopath.getmtime(upload_path)
+        except FileNotFoundError:
+            file_mtime = time()
 
         tg_uploader = TelegramUploader(self, upload_path)
         async for sent_message in tg_uploader.upload():
             if self.is_cancelled:
                 return
             if sent_message:
-                await self._send_leech_completion_message(sent_message)
+                await self._send_leech_completion_message(sent_message, file_mtime)
 
     def _format_stream_info(self, stream, stream_type):
         details = []
@@ -345,53 +474,84 @@ class TaskListener(TaskConfig):
             default = "Default" if stream.get('disposition', {}).get('default') else ""
             return f"{index}. {codec} {lang}, {default}"
 
-    async def _send_leech_completion_message(self, sent_message):
-        name = ospath.basename(sent_message.document.file_name if sent_message.document else sent_message.video.file_name)
-        size = sent_message.document.file_size if sent_message.document else sent_message.video.file_size
+    async def _send_leech_completion_message(self, sent_message, file_mtime):
+        media = sent_message.document or sent_message.video
+        if not media or not media.file_name:
+            LOGGER.warning(f"Skipping completion message for non-media type: {sent_message.id}")
+            return
+
+        name = ospath.basename(media.file_name)
+        size = media.file_size
 
         if self.media_info:
             msg = f"🎬 <code>{self.name}</code>"
-            msg += f"\n📁 Part {self.current_part} of {self.total_parts} | 📂 Total: {get_readable_file_size(self.size)} | ⏱️ {get_readable_time(float(self.media_info['format']['duration']))}"
+            duration = get_readable_time(float(self.media_info['format'].get('duration', 0)))
+            msg += f"\n📁 Part {self.current_part} of {self.total_parts} | 📂 Total: {get_readable_file_size(self.size)} | ⏱️ {duration}"
 
+            # Get streams information
+            video_streams = [s for s in getattr(self, 'streams_kept', []) if s.get('codec_type') == 'video' and not s.get('disposition', {}).get('attached_pic')]
+            audio_streams = [s for s in getattr(self, 'streams_kept', []) if s.get('codec_type') == 'audio']
+            subtitle_streams = [s for s in getattr(self, 'streams_kept', []) if s.get('codec_type') == 'subtitle']
+            art_streams = getattr(self, 'art_streams', [])
+
+            # Summary line
             info_line = "📊 "
-            video_stream = next((s for s in self.streams_kept if s['codec_type'] == 'video' and s.get('disposition', {}).get('attached_pic') == 0), None)
-            audio_streams = [s for s in self.streams_kept if s['codec_type'] == 'audio']
-
-            if video_stream:
-                info_line += f"{video_stream.get('height')}p • {video_stream.get('codec_name')} • "
+            if video_streams:
+                video_stream = video_streams[0]
+                info_line += f"{video_stream.get('height', 'N/A')}p • {video_stream.get('codec_name', 'N/A')} • "
             if audio_streams:
                 info_line += f"{len(audio_streams)}A • "
-                primary_audio_lang = audio_streams[0].get('tags', {}).get('language', 'N/A').upper()
-                info_line += f"{primary_audio_lang} • "
-
+                primary_audio = audio_streams[0]
+                lang_code = primary_audio.get('tags', {}).get('language', 'und')
+                lang_map = {'tel': 'TEL', 'hin': 'HIN', 'tam': 'TAM', 'eng': 'ENG', 'und': 'UND'}
+                primary_lang = lang_map.get(lang_code.lower(), lang_code.upper())
+                info_line += f"{primary_lang} • "
             if self.total_parts > 1:
                 info_line += "Split"
+            info_line = info_line.strip(' • ')
+            if info_line != '📊':
+                msg += f"\n{info_line}"
 
-            msg += f"\n{info_line.strip(' • ')}"
             msg += f"\n📡 Source: {self.tag}"
             msg += f"\n\n📽️ <code>{self.original_name}</code>"
-            msg += f"\n📏 {get_readable_file_size(size)} | 📅 {datetime.fromtimestamp(time()).strftime('%d %b %Y')}"
+            msg += f"\n📏 {get_readable_file_size(size)} | 📅 {datetime.fromtimestamp(file_mtime).strftime('%d %b %Y')}"
 
-            if self.streams_kept:
+            # Streams Kept section
+            if video_streams or audio_streams or subtitle_streams:
                 msg += "\n\n**Streams Kept:**"
-                video_streams_kept = [s for s in self.streams_kept if s['codec_type'] == 'video' and s.get('disposition', {}).get('attached_pic') == 0]
-                audio_streams_kept = [s for s in self.streams_kept if s['codec_type'] == 'audio']
-                subtitle_streams_kept = [s for s in self.streams_kept if s['codec_type'] == 'subtitle']
-                if video_streams_kept:
-                    msg += f"\n🎥 <code>{self._format_stream_info(video_streams_kept[0], 'video')}</code>"
-                for stream in audio_streams_kept:
+                for stream in video_streams:
+                    msg += f"\n🎥 <code>{self._format_stream_info(stream, 'video')}</code>"
+                for stream in audio_streams:
                     msg += f"\n🔊 <code>{self._format_stream_info(stream, 'audio')}</code>"
-                for stream in subtitle_streams_kept:
+                for stream in subtitle_streams:
                     msg += f"\n📜 <code>{self._format_stream_info(stream, 'subtitle')}</code>"
 
-            if self.streams_removed:
+            # Album Art section
+            if art_streams and not video_streams:
+                msg += "\n\n**Album Art (Metadata Only):**"
+                for stream in art_streams:
+                    codec = stream.get('codec_name', 'N/A')
+                    width = stream.get('width', 'N/A')
+                    height = stream.get('height', 'N/A')
+                    msg += f"\n🖼️ Art: {codec}, {width}x{height}"
+
+            # Streams Removed section
+            removed_audio = [s for s in getattr(self, 'streams_removed', []) if s.get('codec_type') == 'audio']
+            removed_subs = [s for s in getattr(self, 'streams_removed', []) if s.get('codec_type') == 'subtitle']
+            if removed_audio or removed_subs:
                 msg += "\n\n**Streams Removed:**"
-                audio_removed = [s for s in self.streams_removed if s['codec_type'] == 'audio']
-                subs_removed = [s for s in self.streams_removed if s['codec_type'] == 'subtitle']
-                for stream in audio_removed:
+                for stream in removed_audio:
                     msg += f"\n🚫 <code>{self._format_stream_info(stream, 'audio')}</code>"
-                for stream in subs_removed:
+                for stream in removed_subs:
                     msg += f"\n🚫 <code>{self._format_stream_info(stream, 'subtitle')}</code>"
+
+            # Final summary
+            v_count = len(video_streams)
+            a_count = len(audio_streams)
+            s_count = len(subtitle_streams)
+            total_streams = v_count + a_count + s_count
+            if total_streams > 0:
+                msg += f"\n\n📊 **Final:** {total_streams} streams ({v_count}v, {a_count}a, {s_count}s) | ⚡️ {self.tag}"
 
             msg += f"\n\n✅ Upload Complete (Part {self.current_part}/{self.total_parts})"
             if self.current_part == self.total_parts:
@@ -399,10 +559,9 @@ class TaskListener(TaskConfig):
                 msg += f"\n🔗 Files are now available in your chat."
             msg += f"\n⚡️ {self.tag}"
         else:
-            msg = f"🎉 <b>Task Completed by {self.tag}</b>"
-            msg += f"\n\n<b>Name:</b> <code>{name}</code>"
-            msg += f"\n<b>Size:</b> {get_readable_file_size(size)}"
-            msg += f"\n\n<b>cc:</b> {self.tag}"
+            # For non-media files
+            file_ext = name.split('.')[-1].upper() if '.' in name else 'FILE'
+            msg = f"📄 Type: {file_ext} • Size: {get_readable_file_size(size)} | ⚡️ {self.tag}"
 
         buttons = ButtonMaker()
         if sent_message.link:
