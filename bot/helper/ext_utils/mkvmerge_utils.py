@@ -3,7 +3,7 @@ import glob
 import shutil
 from aiofiles.os import remove as aioremove, path as aiopath
 from bot import LOGGER
-from bot.helper.ext_utils.bot_utils import cmd_exec
+from bot.helper.ext_utils.bot_utils import cmd_exec, sync_to_async
 
 # Use decimal-based bytes for Telegram limits, as per official documentation
 BUFFER_BYTES = 10 * 1024 * 1024  # 10MB buffer for mkvmerge container overhead
@@ -24,7 +24,7 @@ async def split_video_if_needed(file_path: str, max_tg_size: int = 2000000000) -
     - Starts with an optimistic split size and proportionally reduces it if parts are oversized.
     - `max_tg_size` can be set for different user tiers (e.g., 4000000000 for premium).
     """
-    if not shutil.which('mkvmerge'):
+    if not await sync_to_async(shutil.which, 'mkvmerge'):
         LOGGER.error("mkvmerge is not installed. Cannot split file.")
         return [file_path]
 
@@ -49,7 +49,8 @@ async def split_video_if_needed(file_path: str, max_tg_size: int = 2000000000) -
         LOGGER.info(f"✂️ Attempting to split with size: {current_split_size // 1000000}MB")
 
         # Clean up any split files from previous attempts
-        for old_file in glob.glob(output_pattern.replace("%03d", "*")):
+        old_files = await sync_to_async(glob.glob, output_pattern.replace("%03d", "*"))
+        for old_file in old_files:
             try:
                 await aioremove(old_file)
             except OSError as e:
@@ -64,7 +65,7 @@ async def split_video_if_needed(file_path: str, max_tg_size: int = 2000000000) -
             # If mkvmerge fails outright, splitting is unlikely to succeed.
             return [file_path]
 
-        split_files = sorted(glob.glob(output_pattern.replace("%03d", "*")))
+        split_files = sorted(await sync_to_async(glob.glob, output_pattern.replace("%03d", "*")))
         if len(split_files) <= 1:
             # This can happen if the file is smaller than the split size, but we already checked for that.
             # More likely, mkvmerge failed to split for other reasons.

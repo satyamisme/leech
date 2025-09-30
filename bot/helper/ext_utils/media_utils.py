@@ -410,7 +410,12 @@ class FFMpeg:
 
         self._listener.subproc = await create_subprocess_exec(*cmd, stdout=PIPE, stderr=PIPE)
         await self._ffmpeg_progress()
-        _, stderr = await self._listener.subproc.communicate()
+        try:
+            _, stderr = await wait_for(self._listener.subproc.communicate(), timeout=60)
+        except TimeoutError:
+            LOGGER.error(f"FFmpeg process timed out after progress reporting for {self._listener.name}. Killing process.")
+            self._listener.subproc.kill()
+            _, stderr = await self._listener.subproc.communicate()
         code = self._listener.subproc.returncode
 
         if self._listener.is_cancelled:

@@ -52,7 +52,6 @@ async def run_ffmpeg(command, path, listener):
         LOGGER.error(f"ffmpeg exited with non-zero return code.")
         if listener.is_cancelled:
             return None
-        await listener.on_upload_error(f"ffmpeg exited with non-zero return code.")
         return None
 
 async def process_video(path, listener):
@@ -173,8 +172,8 @@ async def process_video(path, listener):
         final_path = processed_path.replace('.processed.mkv', '.mkv')
         await aiorename(processed_path, final_path)
         if not await aiopath.exists(final_path):
-            LOGGER.error(f"Final processed file {final_path} does not exist after rename!")
-            return None, None
+            LOGGER.error(f"Final processed file {final_path} does not exist after rename! Falling back to original.")
+            return path, media_info
         LOGGER.info("Video processing successful. Output: %s", final_path)
 
         listener.streams_kept = main_video_streams + selected_audio + selected_subtitles
@@ -190,4 +189,8 @@ async def process_video(path, listener):
 
         return final_path, media_info
 
-    return None, None
+    LOGGER.warning(f"Video processing failed. Falling back to original file: {path}")
+    listener.streams_kept = all_streams
+    listener.streams_removed = []
+    listener.art_streams = art_streams
+    return path, media_info
