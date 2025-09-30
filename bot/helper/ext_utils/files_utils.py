@@ -279,29 +279,6 @@ async def is_video(path):
     return False
 
 
-async def is_audio(path):
-    if not await aiopath.isfile(path):
-        return False
-    mime_type = await sync_to_async(get_mime_type, path)
-    if mime_type.startswith("audio"):
-        return True
-    try:
-        result = await cmd_exec(["ffprobe", "-hide_banner", "-loglevel", "error", "-print_format", "json", "-show_streams", path])
-        if result[0] and result[2] == 0:
-            try:
-                fields = json_loads(result[0]).get("streams")
-            except JSONDecodeError:
-                fields = None
-            if fields is None:
-                return False
-            for stream in fields:
-                if stream.get("codec_type") == "audio":
-                    return True
-    except:
-        return False
-    return False
-
-
 async def extract_archive(file_path, extract_dir):
     try:
         if await aiopath.isdir(extract_dir):
