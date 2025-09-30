@@ -218,7 +218,7 @@ class TaskListener(TaskConfig):
         try:
             return await extract_archive(up_path, f"{self.dir}/{task_id}")
         except Exception as e:
-            await self.on_upload_error(str(e))
+            LOGGER.error(f"Error during extraction: {e}")
             return None
 
     async def on_download_complete(self):
@@ -232,7 +232,10 @@ class TaskListener(TaskConfig):
             if self.extract and is_archive(up_path):
                 LOGGER.info(f"Extracting archive: {up_path}")
                 up_path = await self.proceed_extract(up_path, self.mid)
-                if not up_path or self.is_cancelled:
+                if not up_path:
+                    await self.on_upload_error("Failed to extract the archive. The file may be corrupted or password-protected.")
+                    return
+                if self.is_cancelled:
                     return
 
             files_to_process = []
