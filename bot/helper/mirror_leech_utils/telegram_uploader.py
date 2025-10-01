@@ -227,10 +227,8 @@ class TelegramUploader:
             return
 
         files_to_upload = []
-        if await aiopath.isdir(self._path):
+        if await sync_to_async(ospath.isdir, self._path):
             for dirpath, _, files in natsorted(await sync_to_async(walk, self._path)):
-                if "/.pad" in dirpath:
-                    continue
                 if dirpath.strip().endswith("/yt-dlp-thumb"):
                     continue
                 if dirpath.strip().endswith("_mltbss"):
@@ -238,8 +236,6 @@ class TelegramUploader:
                     await rmtree(dirpath, ignore_errors=True)
                     continue
                 for file_ in natsorted(files):
-                    if file_.endswith((".aria2", ".!qB")):
-                        continue
                     files_to_upload.append(ospath.join(dirpath, file_))
         else:
             files_to_upload.append(self._path)

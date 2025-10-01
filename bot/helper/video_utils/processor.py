@@ -8,7 +8,7 @@ import json
 from time import time
 import os.path as ospath
 from aiofiles.os import rename as aiorename, path as aiopath
-from json import JSONDecodeError, loads as json_loads
+from json import JSONDecodeError
 
 async def get_media_info(path):
     """Get media information using ffprobe with a timeout."""
@@ -31,7 +31,7 @@ async def get_media_info(path):
             return default_info
 
         try:
-            return json_loads(stdout)
+            return json.loads(stdout)
         except JSONDecodeError:
             LOGGER.error(f"Failed to parse ffprobe output: {stdout.decode(errors='ignore').strip()}")
             return default_info
@@ -52,6 +52,7 @@ async def run_ffmpeg(command, path, listener):
         LOGGER.error(f"ffmpeg exited with non-zero return code.")
         if listener.is_cancelled:
             return None
+        await listener.on_upload_error(f"ffmpeg exited with non-zero return code.")
         return None
 
 async def process_video(path, listener):
@@ -64,9 +65,6 @@ async def process_video(path, listener):
         # If streams are manually selected, we still need media_info for the completion message.
         if not listener.media_info:
              listener.media_info = await get_media_info(path)
-        if listener.media_info and 'streams' in listener.media_info:
-            all_video_streams = [s for s in listener.media_info['streams'] if s.get('codec_type') == 'video']
-            listener.art_streams = [s for s in all_video_streams if s.get('disposition', {}).get('attached_pic')]
         return path, listener.media_info
 
     listener.original_name = ospath.basename(path)
@@ -131,25 +129,13 @@ async def process_video(path, listener):
         selected_audio = audio_streams_to_process
 
     selected_subtitles = []
-    if subtitle_streams_to_process:
-        found_preferred_subtitle = False
-        for pref_lang in preferred_langs:
-            lang_subtitle_streams = [s for s in subtitle_streams_to_process if get_lang_code(s) == pref_lang]
-            if lang_subtitle_streams:
-                selected_subtitles = lang_subtitle_streams
-                found_preferred_subtitle = True
-                LOGGER.info("Found preferred subtitle language '%s', selecting %d stream(s).", pref_lang, len(selected_subtitles))
-                break
-        if not found_preferred_subtitle:
-            LOGGER.info("No preferred subtitle language found, keeping all subtitle tracks.")
-            selected_subtitles = subtitle_streams_to_process
 
-    streams_to_keep_in_ffmpeg = main_video_streams + art_streams + selected_audio + selected_subtitles
+    streams_to_keep_in_ffmpeg = main_video_streams + art_streams + selected_audio
     LOGGER.info("Total streams to keep: %d", len(streams_to_keep_in_ffmpeg))
 
     if len(streams_to_keep_in_ffmpeg) == len(all_streams):
          LOGGER.info("No streams to remove, skipping processing.")
-         listener.streams_kept = main_video_streams + selected_audio + selected_subtitles
+         listener.streams_kept = main_video_streams + selected_audio
          kept_indices = {s['index'] for s in streams_to_keep_in_ffmpeg}
          listener.streams_removed = [s for s in all_streams if s['index'] not in kept_indices]
          listener.art_streams = art_streams
@@ -172,8 +158,8 @@ async def process_video(path, listener):
         final_path = processed_path.replace('.processed.mkv', '.mkv')
         await aiorename(processed_path, final_path)
         if not await aiopath.exists(final_path):
-            LOGGER.error(f"Final processed file {final_path} does not exist after rename! Falling back to original.")
-            return path, media_info
+            LOGGER.error(f"Final processed file {final_path} does not exist after rename!")
+            return None, None
         LOGGER.info("Video processing successful. Output: %s", final_path)
 
         listener.streams_kept = main_video_streams + selected_audio + selected_subtitles
@@ -189,8 +175,4 @@ async def process_video(path, listener):
 
         return final_path, media_info
 
-    LOGGER.warning(f"Video processing failed. Falling back to original file: {path}")
-    listener.streams_kept = all_streams
-    listener.streams_removed = []
-    listener.art_streams = art_streams
-    return path, media_info
+    return None, None
