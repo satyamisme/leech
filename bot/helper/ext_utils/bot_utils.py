@@ -214,11 +214,11 @@ async def cmd_exec(cmd, shell=False):
         proc = await create_subprocess_exec(*cmd, stdout=PIPE, stderr=PIPE)
     stdout, stderr = await proc.communicate()
     try:
-        stdout = stdout.decode().strip()
+        stdout = stdout.decode(errors='ignore').strip()
     except:
         stdout = "Unable to decode the response!"
     try:
-        stderr = stderr.decode().strip()
+        stderr = stderr.decode(errors='ignore').strip()
     except:
         stderr = "Unable to decode the error!"
     return stdout, stderr, proc.returncode

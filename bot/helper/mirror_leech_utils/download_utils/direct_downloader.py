@@ -1,4 +1,5 @@
 from secrets import token_urlsafe
+from typing import TYPE_CHECKING
 
 from .... import (
     LOGGER,
@@ -11,8 +12,11 @@ from ...mirror_leech_utils.status_utils.direct_status import DirectStatus
 from ...mirror_leech_utils.status_utils.queue_status import QueueStatus
 from ...telegram_helper.message_utils import send_status_message
 
+if TYPE_CHECKING:
+    from ....modules.mirror_leech import Mirror
 
-async def add_direct_download(listener, path):
+
+async def add_direct_download(listener: "Mirror", path):
     details = listener.link
     if not (contents := details.get("contents")):
         await listener.on_download_error("There is nothing to download!")

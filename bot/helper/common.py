@@ -50,6 +50,7 @@ from .ext_utils.media_utils import (
     get_document_type,
     FFMpeg,
 )
+from .ext_utils.mkvmerge_utils import split_video_if_needed
 from .telegram_helper.message_utils import (
     send_message,
     send_status_message,
@@ -94,8 +95,6 @@ class TaskConfig:
         self.compress = False
         self.select = False
         self.seed = False
-        self.compress = False
-        self.extract = False
         self.join = False
         self.private_link = False
         self.stop_duplicate = False
@@ -214,27 +213,25 @@ class TaskConfig:
         if self.user_dict.get("UPLOAD_PATHS", False):
             if self.up_dest in self.user_dict["UPLOAD_PATHS"]:
                 self.up_dest = self.user_dict["UPLOAD_PATHS"][self.up_dest]
-        elif (
-            "UPLOAD_PATHS" not in self.user_dict or not self.user_dict["UPLOAD_PATHS"]
-        ) and Config.UPLOAD_PATHS:
+        elif "UPLOAD_PATHS" not in self.user_dict and Config.UPLOAD_PATHS:
             if self.up_dest in Config.UPLOAD_PATHS:
                 self.up_dest = Config.UPLOAD_PATHS[self.up_dest]
 
-        if self.ffmpeg_cmds:
+        if self.ffmpeg_cmds and not isinstance(self.ffmpeg_cmds, list):
             if self.user_dict.get("FFMPEG_CMDS", None):
                 ffmpeg_dict = deepcopy(self.user_dict["FFMPEG_CMDS"])
-            elif (
-                "FFMPEG_CMDS" not in self.user_dict or not self.user_dict["FFMPEG_CMDS"]
-            ) and Config.FFMPEG_CMDS:
+            elif "FFMPEG_CMDS" not in self.user_dict and Config.FFMPEG_CMDS:
                 ffmpeg_dict = deepcopy(Config.FFMPEG_CMDS)
             else:
                 ffmpeg_dict = None
-            cmds = []
-            for key in list(self.ffmpeg_cmds):
-                if isinstance(key, tuple):
-                    cmds.extend(list(key))
-                elif ffmpeg_dict is not None:
-                    if key in ffmpeg_dict.keys():
+            if ffmpeg_dict is None:
+                self.ffmpeg_cmds = ffmpeg_dict
+            else:
+                cmds = []
+                for key in list(self.ffmpeg_cmds):
+                    if isinstance(key, tuple):
+                        cmds.extend(list(key))
+                    elif key in ffmpeg_dict.keys():
                         for ind, vl in enumerate(ffmpeg_dict[key]):
                             if variables := set(findall(r"\{(.*?)\}", vl)):
                                 ff_values = (
@@ -248,7 +245,7 @@ class TaskConfig:
                                     cmds.append(vl.format(**ff_values))
                             else:
                                 cmds.append(vl)
-            self.ffmpeg_cmds = cmds
+                self.ffmpeg_cmds = cmds
 
         if not self.is_leech:
             self.stop_duplicate = (
@@ -265,20 +262,21 @@ class TaskConfig:
                 self.up_dest = self.user_dict.get("GDRIVE_ID") or Config.GDRIVE_ID
             if not self.up_dest:
                 raise ValueError("No Upload Destination!")
+            if is_gdrive_id(self.up_dest):
+                if not self.up_dest.startswith(
+                    ("mtp:", "tp:", "sa:")
+                ) and self.user_dict.get("USER_TOKENS", False):
+                    self.up_dest = f"mtp:{self.up_dest}"
+            elif is_rclone_path(self.up_dest):
+                if not self.up_dest.startswith("mrcc:") and self.user_dict.get(
+                    "USER_TOKENS", False
+                ):
+                    self.up_dest = f"mrcc:{self.up_dest}"
+                self.up_dest = self.up_dest.strip("/")
+            else:
+                raise ValueError("Wrong Upload Destination!")
+
             if self.up_dest not in ["rcl", "gdl"]:
-                if is_gdrive_id(self.up_dest):
-                    if not self.up_dest.startswith(
-                        ("mtp:", "tp:", "sa:")
-                    ) and self.user_dict.get("USER_TOKENS", False):
-                        self.up_dest = f"mtp:{self.up_dest}"
-                elif is_rclone_path(self.up_dest):
-                    if not self.up_dest.startswith("mrcc:") and self.user_dict.get(
-                        "USER_TOKENS", False
-                    ):
-                        self.up_dest = f"mrcc:{self.up_dest}"
-                    self.up_dest = self.up_dest.strip("/")
-                else:
-                    raise ValueError("Wrong Upload Destination!")
                 await self.is_token_exists(self.up_dest, "up")
 
             if self.up_dest == "rcl":
@@ -322,11 +320,7 @@ class TaskConfig:
             self.up_dest = (
                 self.up_dest
                 or self.user_dict.get("LEECH_DUMP_CHAT")
-                or (
-                    Config.LEECH_DUMP_CHAT
-                    if "LEECH_DUMP_CHAT" not in self.user_dict
-                    else None
-                )
+                or (Config.LEECH_DUMP_CHAT if "LEECH_DUMP_CHAT" not in self.user_dict else None)
             )
             self.hybrid_leech = TgClient.IS_PREMIUM_USER and (
                 self.user_dict.get("HYBRID_LEECH")
@@ -431,15 +425,17 @@ class TaskConfig:
                 or self.user_dict.get("LEECH_SPLIT_SIZE")
                 or Config.LEECH_SPLIT_SIZE
             )
+            self.max_split_size = (
+                TgClient.MAX_SPLIT_SIZE if self.user_transmission else 2086666240
+            )
+            if self.split_size == 0:
+                self.split_size = self.max_split_size
+            self.split_size = min(self.split_size, self.max_split_size)
             self.equal_splits = (
                 self.user_dict.get("EQUAL_SPLITS")
                 or Config.EQUAL_SPLITS
                 and "EQUAL_SPLITS" not in self.user_dict
             )
-            self.max_split_size = (
-                TgClient.MAX_SPLIT_SIZE if self.user_transmission else 2097152000
-            )
-            self.split_size = min(self.split_size, self.max_split_size)
 
             if not self.as_doc:
                 self.as_doc = (
@@ -476,7 +472,7 @@ class TaskConfig:
                 self.tag = " ".join(user_info[:-1])
             else:
                 self.tag, id_ = text[1].split("Tag: ")[1].split()
-            self.user = self.message.from_user = await self.client.get_users(int(id_))
+            self.user = self.message.from_user = await self.client.get_users(id_)
             self.user_id = self.user.id
             self.user_dict = user_data.get(self.user_id, {})
             try:
@@ -529,9 +525,19 @@ class TaskConfig:
             if self.multi > 2:
                 msgts += f"\nCancel Multi: <code>/{BotCommands.CancelTaskCommand[1]} {self.multi_tag}</code>"
             nextmsg = await send_message(nextmsg, msgts)
+        if not nextmsg or isinstance(nextmsg, str):
+            LOGGER.error(f"Failed to send multi-task message: {nextmsg}")
+            if self.multi_tag in multi_tags:
+                multi_tags.discard(self.multi_tag)
+            return
         nextmsg = await self.client.get_messages(
             chat_id=self.message.chat.id, message_ids=nextmsg.id
         )
+        if not nextmsg:
+            LOGGER.error("Failed to get sent message.")
+            if self.multi_tag in multi_tags:
+                multi_tags.discard(self.multi_tag)
+            return
         if self.message.from_user:
             nextmsg.from_user = self.user
         else:
@@ -678,17 +684,10 @@ class TaskConfig:
                 input_indexes = [
                     index for index, value in enumerate(cmd) if value == "-i"
                 ]
-                input_file = next(
-                    (
-                        cmd[index + 1]
-                        for index in input_indexes
-                        if cmd[index + 1].startswith("mltb")
-                    ),
-                    "",
-                )
-                if not input_file:
-                    LOGGER.error("Wrong FFmpeg cmd!")
-                    return dl_path
+                for index in input_indexes:
+                    if cmd[index + 1].startswith("mltb"):
+                        input_file = cmd[index + 1]
+                        break
                 if input_file.strip().endswith(".video"):
                     ext = "video"
                 elif input_file.strip().endswith(".audio"):
@@ -726,17 +725,16 @@ class TaskConfig:
                         await cpu_eater_lock.acquire()
                         self.progress = True
                     LOGGER.info(f"Running ffmpeg cmd for: {file_path}")
-                    var_cmd = cmd.copy()
                     for index in input_indexes:
                         if cmd[index + 1].startswith("mltb"):
-                            var_cmd[index + 1] = file_path
+                            cmd[index + 1] = file_path
                         elif is_telegram_link(cmd[index + 1]):
                             msg = (await get_tg_link_message(cmd[index + 1]))[0]
                             file_dir = await temp_download(msg)
                             inputs[index + 1] = file_dir
-                            var_cmd[index + 1] = file_dir
+                            cmd[index + 1] = file_dir
                     self.subsize = self.size
-                    res = await ffmpeg.ffmpeg_cmds(var_cmd, file_path)
+                    res = await ffmpeg.ffmpeg_cmds(cmd, file_path)
                     if res:
                         if delete_files:
                             await remove(file_path)
@@ -780,14 +778,7 @@ class TaskConfig:
                             ] and not f_path.strip().lower().endswith(ext):
                                 continue
                             self.proceed_count += 1
-                            for index in input_indexes:
-                                if cmd[index + 1].startswith("mltb"):
-                                    var_cmd[index + 1] = f_path
-                                elif is_telegram_link(cmd[index + 1]):
-                                    msg = (await get_tg_link_message(cmd[index + 1]))[0]
-                                    file_dir = await temp_download(msg)
-                                    inputs[index + 1] = file_dir
-                                    var_cmd[index + 1] = file_dir
+                            var_cmd[index + 1] = f_path
                             if not checked:
                                 checked = True
                                 async with task_dict_lock:
@@ -1092,13 +1083,14 @@ class TaskConfig:
                     split_size = self.split_size
                 if not self.as_doc and (await get_document_type(f_path))[0]:
                     self.progress = True
-                    res = await ffmpeg.split(f_path, file_, parts, split_size)
+                    split_files = await split_video_if_needed(f_path)
+                    res = len(split_files) > 1
                 else:
                     self.progress = False
                     res = await split_file(f_path, split_size, self)
                 if self.is_cancelled:
                     return False
-                if res or f_size >= self.max_split_size:
+                if res:
                     try:
                         await remove(f_path)
                     except:

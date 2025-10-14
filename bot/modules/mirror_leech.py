@@ -75,7 +75,7 @@ class Mirror(TaskListener):
         text = self.message.text.split("\n")
         input_list = text[0].split(" ")
 
-        args = {
+        self.args = {
             "-doc": False,
             "-med": False,
             "-d": False,
@@ -110,59 +110,59 @@ class Mirror(TaskListener):
             "-ff": set(),
         }
 
-        arg_parser(input_list[1:], args)
+        arg_parser(input_list[1:], self.args)
 
-        self.select = args["-s"]
-        self.seed = args["-d"]
-        self.name = args["-n"]
-        self.up_dest = args["-up"]
-        self.rc_flags = args["-rcf"]
-        self.link = args["link"]
-        self.compress = args["-z"]
-        self.extract = args["-e"]
-        self.join = args["-j"]
-        self.thumb = args["-t"]
-        self.split_size = args["-sp"]
-        self.sample_video = args["-sv"]
-        self.screen_shots = args["-ss"]
-        self.force_run = args["-f"]
-        self.force_download = args["-fd"]
-        self.force_upload = args["-fu"]
-        self.convert_audio = args["-ca"]
-        self.convert_video = args["-cv"]
-        self.name_sub = args["-ns"]
-        self.hybrid_leech = args["-hl"]
-        self.thumbnail_layout = args["-tl"]
-        self.as_doc = args["-doc"]
-        self.as_med = args["-med"]
-        self.folder_name = f"/{args["-m"]}".rstrip("/") if len(args["-m"]) > 0 else ""
-        self.bot_trans = args["-bt"]
-        self.user_trans = args["-ut"]
-        self.ffmpeg_cmds = args["-ff"]
+        self.select = self.args["-s"]
+        self.seed = self.args["-d"]
+        self.name = self.args["-n"]
+        self.up_dest = self.args["-up"]
+        self.rc_flags = self.args["-rcf"]
+        self.link = self.args["link"]
+        self.compress = self.args["-z"]
+        self.extract = self.args["-e"]
+        self.join = self.args["-j"]
+        self.thumb = self.args["-t"]
+        self.split_size = self.args["-sp"]
+        self.sample_video = self.args["-sv"]
+        self.screen_shots = self.args["-ss"]
+        self.force_run = self.args["-f"]
+        self.force_download = self.args["-fd"]
+        self.force_upload = self.args["-fu"]
+        self.convert_audio = self.args["-ca"]
+        self.convert_video = self.args["-cv"]
+        self.name_sub = self.args["-ns"]
+        self.hybrid_leech = self.args["-hl"]
+        self.thumbnail_layout = self.args["-tl"]
+        self.as_doc = self.args["-doc"]
+        self.as_med = self.args["-med"]
+        self.folder_name = f"/{self.args['-m']}".rstrip("/") if len(self.args["-m"]) > 0 else ""
+        self.bot_trans = self.args["-bt"]
+        self.user_trans = self.args["-ut"]
+        self.ffmpeg_cmds = self.args["-ff"]
 
-        headers = args["-h"]
-        if headers:
-            headers = headers.split("|")
-        is_bulk = args["-b"]
+        self.headers = self.args["-h"]
+        if self.headers:
+            self.headers = self.headers.split("|")
+        is_bulk = self.args["-b"]
 
         bulk_start = 0
         bulk_end = 0
-        ratio = None
-        seed_time = None
-        reply_to = None
-        file_ = None
-        session = ""
+        self.ratio = None
+        self.seed_time = None
+        self.reply_to = None
+        self.file_ = None
+        self.session = ""
 
         try:
-            self.multi = int(args["-i"])
+            self.multi = int(self.args["-i"])
         except:
             self.multi = 0
 
         if not isinstance(self.seed, bool):
             dargs = self.seed.split(":")
-            ratio = dargs[0] or None
+            self.ratio = dargs[0] or None
             if len(dargs) == 2:
-                seed_time = dargs[1] or None
+                self.seed_time = dargs[1] or None
             self.seed = True
 
         if not isinstance(is_bulk, bool):
@@ -211,21 +211,25 @@ class Mirror(TaskListener):
 
         await self.get_tag(text)
 
-        path = f"{DOWNLOAD_DIR}{self.mid}{self.folder_name}"
+        self.path = f"{DOWNLOAD_DIR}{self.mid}{self.folder_name}"
 
-        if not self.link and (reply_to := self.message.reply_to_message):
-            if reply_to.text:
-                self.link = reply_to.text.split("\n", 1)[0].strip()
+        if not self.link:
+            reply_to = self.message.reply_to_message
+            if reply_to is not None:
+                self.reply_to = reply_to
+                if reply_to.text:
+                    self.link = reply_to.text.split("\n", 1)[0].strip()
+
         if is_telegram_link(self.link):
             try:
-                reply_to, session = await get_tg_link_message(self.link)
+                self.reply_to, self.session = await get_tg_link_message(self.link)
             except Exception as e:
                 await send_message(self.message, f"ERROR: {e}")
                 await self.remove_from_same_dir()
                 return
 
-        if isinstance(reply_to, list):
-            self.bulk = reply_to
+        if isinstance(self.reply_to, list):
+            self.bulk = self.reply_to
             b_msg = input_list[:1]
             self.options = " ".join(input_list[1:])
             b_msg.append(f"{self.bulk[0]} -i {len(self.bulk)} {self.options}")
@@ -251,37 +255,37 @@ class Mirror(TaskListener):
             ).new_event()
             return
 
-        if reply_to:
-            file_ = (
-                reply_to.document
-                or reply_to.photo
-                or reply_to.video
-                or reply_to.audio
-                or reply_to.voice
-                or reply_to.video_note
-                or reply_to.sticker
-                or reply_to.animation
+        if self.reply_to:
+            self.file_ = (
+                self.reply_to.document
+                or self.reply_to.photo
+                or self.reply_to.video
+                or self.reply_to.audio
+                or self.reply_to.voice
+                or self.reply_to.video_note
+                or self.reply_to.sticker
+                or self.reply_to.animation
                 or None
             )
 
-            if file_ is None:
-                if reply_text := reply_to.text:
-                    self.link = reply_text.split("\n", 1)[0].strip()
+            if self.file_ is None:
+                if self.reply_to.text:
+                    self.link = self.reply_to.text.split("\n", 1)[0].strip()
                 else:
-                    reply_to = None
-            elif reply_to.document and (
-                file_.mime_type == "application/x-bittorrent"
-                or file_.file_name.endswith((".torrent", ".dlc", ".nzb"))
+                    self.reply_to = None
+            elif self.reply_to.document and (
+                self.file_.mime_type == "application/x-bittorrent"
+                or self.file_.file_name.endswith((".torrent", ".dlc", ".nzb"))
             ):
-                self.link = await reply_to.download()
-                file_ = None
+                self.link = await self.reply_to.download()
+                self.file_ = None
 
         if (
             not self.link
-            and file_ is None
+            and self.file_ is None
             or is_telegram_link(self.link)
-            and reply_to is None
-            or file_ is None
+            and self.reply_to is None
+            or self.file_ is None
             and not is_url(self.link)
             and not is_magnet(self.link)
             and not await aiopath.exists(self.link)
@@ -305,63 +309,7 @@ class Mirror(TaskListener):
             await self.remove_from_same_dir()
             return
 
-        if (
-            not self.is_jd
-            and not self.is_nzb
-            and not self.is_qbit
-            and not is_magnet(self.link)
-            and not is_rclone_path(self.link)
-            and not is_gdrive_link(self.link)
-            and not self.link.endswith(".torrent")
-            and file_ is None
-            and not is_gdrive_id(self.link)
-        ):
-            content_type = await get_content_type(self.link)
-            if content_type is None or re_match(r"text/html|text/plain", content_type):
-                try:
-                    self.link = await sync_to_async(direct_link_generator, self.link)
-                    if isinstance(self.link, tuple):
-                        self.link, headers = self.link
-                    elif isinstance(self.link, str):
-                        LOGGER.info(f"Generated link: {self.link}")
-                except DirectDownloadLinkException as e:
-                    e = str(e)
-                    if "This link requires a password!" not in e:
-                        LOGGER.info(e)
-                    if e.startswith("ERROR:"):
-                        await send_message(self.message, e)
-                        await self.remove_from_same_dir()
-                        return
-                except Exception as e:
-                    await send_message(self.message, e)
-                    await self.remove_from_same_dir()
-                    return
-
-        if file_ is not None:
-            await TelegramDownloadHelper(self).add_download(
-                reply_to, f"{path}/", session
-            )
-        elif isinstance(self.link, dict):
-            await add_direct_download(self, path)
-        elif self.is_jd:
-            await add_jd_download(self, path)
-        elif self.is_qbit:
-            await add_qb_torrent(self, path, ratio, seed_time)
-        elif self.is_nzb:
-            await add_nzb(self, path)
-        elif is_rclone_path(self.link):
-            await add_rclone_download(self, f"{path}/")
-        elif is_gdrive_link(self.link) or is_gdrive_id(self.link):
-            await add_gd_download(self, path)
-        else:
-            ussr = args["-au"]
-            pssw = args["-ap"]
-            if ussr or pssw:
-                auth = f"{ussr}:{pssw}"
-                headers.extend(
-                    [f"authorization: Basic {b64encode(auth.encode()).decode('ascii')}"]
-                )
-            await add_aria2_download(self, path, headers, ratio, seed_time)
+        await self.on_task_created()
 
 
 async def mirror(client, message):

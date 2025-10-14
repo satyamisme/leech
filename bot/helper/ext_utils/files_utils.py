@@ -1,5 +1,5 @@
 from aioshutil import rmtree as aiormtree, move
-from asyncio import create_subprocess_exec, sleep, wait_for
+from asyncio import create_subprocess_exec, sleep, wait_for, TimeoutError
 from asyncio.subprocess import PIPE
 from magic import Magic
 from os import walk, path as ospath, readlink
@@ -13,11 +13,13 @@ from aiofiles.os import (
     symlink,
     makedirs as aiomakedirs,
 )
+from json import loads as json_loads, JSONDecodeError
 
-from ... import LOGGER, DOWNLOAD_DIR
+from ... import LOGGER, DOWNLOAD_DIR, cpu_no
 from ...core.torrent_manager import TorrentManager
 from .bot_utils import sync_to_async, cmd_exec
 from .exceptions import NotSupportedExtractionArchive
+from .status_utils import time_to_seconds
 
 ARCH_EXT = [
     ".tar.bz2",
@@ -201,10 +203,11 @@ async def create_recursive_symlink(source, destination):
 def get_mime_type(file_path):
     if ospath.islink(file_path):
         file_path = readlink(file_path)
+    if ospath.isdir(file_path):
+        return 'application/x-directory'
     mime = Magic(mime=True)
     mime_type = mime.from_file(file_path)
-    mime_type = mime_type or "text/plain"
-    return mime_type
+    return mime_type or "text/plain"
 
 
 async def remove_excluded_files(fpath, ee):
@@ -264,33 +267,76 @@ async def join_files(opath):
                     await remove(f"{opath}/{file_}")
 
 
-async def split_file(f_path, split_size, listener):
-    out_path = f"{f_path}."
+async def split_file(path, size, file_, listener):
     if listener.is_cancelled:
         return False
-    listener.subproc = await create_subprocess_exec(
+    parts = -(-size // listener.split_size)
+    base_name, extension = ospath.splitext(file_)
+    split_size = listener.split_size
+    LOGGER.info(f"Splitting {file_} into {parts} parts.")
+    cmd = [
         "split",
-        "--numeric-suffixes=1",
-        "--suffix-length=3",
         f"--bytes={split_size}",
-        f_path,
-        out_path,
-        stderr=PIPE,
-    )
-    _, stderr = await listener.subproc.communicate()
-    code = listener.subproc.returncode
-    if listener.is_cancelled:
+        "--numeric-suffixes=1",
+        f"--additional-suffix={extension}",
+        path,
+        f"{ospath.join(ospath.dirname(path), base_name)}.part",
+    ]
+    process = await create_subprocess_exec(*cmd, stderr=PIPE, stdout=PIPE)
+    _, stderr = await process.communicate()
+    if process.returncode != 0:
+        LOGGER.error(f"Error while splitting file: {stderr.decode(errors='ignore').strip()}")
         return False
-    if code == -9:
-        listener.is_cancelled = True
-        return False
-    elif code != 0:
-        try:
-            stderr = stderr.decode().strip()
-        except:
-            stderr = "Unable to decode the error!"
-        LOGGER.error(f"{stderr}. Split Document: {f_path}")
     return True
+
+
+async def is_video(path):
+    if not await aiopath.isfile(path):
+        return False
+    mime_type = await sync_to_async(get_mime_type, path)
+    if mime_type.startswith("video"):
+        return True
+    try:
+        result = await cmd_exec(["ffprobe", "-hide_banner", "-loglevel", "error", "-print_format", "json", "-show_streams", path])
+        if result[0] and result[2] == 0:
+            try:
+                fields = json_loads(result[0]).get("streams")
+            except JSONDecodeError:
+                fields = None
+            if fields is None:
+                return False
+            for stream in fields:
+                if stream.get("codec_type") == "video":
+                    return True
+    except:
+        return False
+    return False
+
+
+async def extract_archive(file_path, extract_dir):
+    try:
+        if await aiopath.isdir(extract_dir):
+            await aiormtree(extract_dir)
+        await aiomakedirs(extract_dir, exist_ok=True)
+
+        cmd = ["7z", "x", f"-o{extract_dir}", file_path, "-aot"]
+        process = await create_subprocess_exec(*cmd, stderr=PIPE, stdout=PIPE)
+        _, stderr = await process.communicate()
+
+        if process.returncode != 0:
+            LOGGER.error(f"Archive extraction failed for {file_path}. Return code: {process.returncode}")
+            if stderr:
+                LOGGER.error(f"stderr: {stderr.decode(errors='ignore')}")
+            return None
+
+        LOGGER.info(f"Successfully extracted {file_path} to {extract_dir}")
+        files = await listdir(extract_dir)
+        if len(files) == 1 and await aiopath.isdir(ospath.join(extract_dir, files[0])):
+             return ospath.join(extract_dir, files[0])
+        return extract_dir
+    except Exception as e:
+        LOGGER.error(f"An error occurred during extraction: {e}")
+        return None
 
 
 class SevenZ:

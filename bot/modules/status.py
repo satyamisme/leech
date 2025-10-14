@@ -166,7 +166,7 @@ async def status_pages(_, query):
                     case MirrorStatus.STATUS_CONVERT:
                         tasks["ConvertMedia"] += 1
                     case MirrorStatus.STATUS_FFMPEG:
-                        tasks["FFmpeg"] += 1
+                        tasks["FFMPEG"] += 1
                     case _:
                         tasks["Download"] += 1
 

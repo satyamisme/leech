@@ -31,6 +31,7 @@ class Config:
     HYBRID_LEECH = False
     HYDRA_IP = ""
     HYDRA_API_KEY = ""
+    PREFERRED_LANGUAGES = "tel, hin, eng"
     NAME_SUBSTITUTE = ""
     OWNER_ID = 0
     QUEUE_ALL = 0
@@ -65,6 +66,7 @@ class Config:
     USER_SESSION_STRING = ""
     USER_TRANSMISSION = False
     USE_SERVICE_ACCOUNTS = False
+    USE_USER_SESSION_FOR_BIG_FILES = False
     WEB_PINCODE = False
     YT_DLP_OPTIONS = {}
 
@@ -154,6 +156,7 @@ class Config:
         if attr in {
             "BASE_URL",
             "RCLONE_SERVE_URL",
+            "INDEX_URL",
             "SEARCH_API_LINK",
         }:
             return converted_value.strip("/") if converted_value else ""
@@ -205,9 +208,10 @@ class Config:
         for key in required_keys:
             value = getattr(cls, key)
             if isinstance(value, str):
-                value = value.strip()
-            if not value:
-                raise ValueError(f"{key} variable is missing!")
+                if not value.strip():
+                    raise ValueError(f'"{key}" variable is missing!')
+            elif value == 0:
+                raise ValueError(f'"{key}" variable is not set to a valid value!')
 
     @classmethod
     def load(cls) -> None:

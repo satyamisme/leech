@@ -52,15 +52,21 @@ async def main():
     )
 
 
-bot_loop.run_until_complete(main())
-
+from .core.torrent_manager import TorrentManager
 from .helper.ext_utils.bot_utils import create_help_buttons
 from .helper.listeners.aria2_listener import add_aria2_callbacks
 from .core.handlers import add_handlers
 
-add_aria2_callbacks()
-create_help_buttons()
-add_handlers()
+try:
+    bot_loop.run_until_complete(main())
+    add_aria2_callbacks()
+    create_help_buttons()
+    add_handlers()
 
-LOGGER.info("Bot Started!")
-bot_loop.run_forever()
+    LOGGER.info("Bot Started!")
+    bot_loop.run_forever()
+except (KeyboardInterrupt, SystemExit):
+    LOGGER.info("Bot stopped!")
+finally:
+    bot_loop.run_until_complete(TorrentManager.close_all())
+    bot_loop.close()

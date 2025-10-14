@@ -3,6 +3,13 @@ from asyncio import sleep, TimeoutError
 from time import time
 from aiohttp.client_exceptions import ClientError
 from aioqbt.exc import AQError
+from tenacity import (
+    retry,
+    wait_exponential,
+    stop_after_attempt,
+    RetryError,
+    retry_if_exception_type,
+)
 
 from ... import (
     task_dict,
@@ -46,7 +53,8 @@ async def _on_seed_finish(tor):
     ext_hash = tor.hash
     LOGGER.info(f"Cancelling Seed: {tor.name}")
     if task := await get_task_by_gid(ext_hash[:12]):
-        msg = f"Seeding stopped with Ratio: {round(tor.ratio, 3)} and Time: {get_readable_time(int(tor.seeding_time.total_seconds() or "0"))}"
+        seeding_time = tor.seeding_time.total_seconds() if tor.seeding_time else 0
+        msg = f"Seeding stopped with Ratio: {round(tor.ratio, 3)} and Time: {get_readable_time(int(seeding_time))}"
         await task.listener.on_upload_error(msg)
     await _remove_torrent(ext_hash, tor.tags[0])
 
@@ -68,18 +76,10 @@ async def _on_download_complete(tor):
     ext_hash = tor.hash
     tag = tor.tags[0]
     if task := await get_task_by_gid(ext_hash[:12]):
-        if not task.listener.seed:
-            await TorrentManager.qbittorrent.torrents.stop([ext_hash])
         if task.listener.select:
             await clean_unwanted(task.listener.dir)
-            path = tor.content_path.rsplit("/", 1)[0]
-            res = await TorrentManager.qbittorrent.torrents.files(ext_hash)
-            for f in res:
-                if f.priority == 0 and await aiopath.exists(f"{path}/{f.name}"):
-                    try:
-                        await remove(f"{path}/{f.name}")
-                    except:
-                        pass
+        path = tor.content_path.rsplit("/", 1)[0]
+        task.listener.name = path.split('/')[-1]
         await task.listener.on_download_complete()
         if intervals["stopAll"]:
             return
@@ -105,7 +105,20 @@ async def _on_download_complete(tor):
         else:
             await _remove_torrent(ext_hash, tag)
     else:
-        await _remove_torrent(ext_hash, tag)
+        await _remove_torrent(tor.hash, tor.tags[0])
+
+
+@retry(
+    wait=wait_exponential(multiplier=1, min=2, max=10),
+    stop=stop_after_attempt(3),
+    retry=(
+        retry_if_exception_type(ClientError)
+        | retry_if_exception_type(TimeoutError)
+        | retry_if_exception_type(AQError)
+    ),
+)
+async def get_torrents_info():
+    return await TorrentManager.qbittorrent.torrents.info()
 
 
 @new_task
@@ -113,7 +126,7 @@ async def _qb_listener():
     while True:
         async with qb_listener_lock:
             try:
-                torrents = await TorrentManager.qbittorrent.torrents.info()
+                torrents = await get_torrents_info()
                 if len(torrents) == 0:
                     intervals["qb"] = ""
                     break
@@ -190,8 +203,10 @@ async def _qb_listener():
                         qb_torrents[tag]["seeding"] = False
                         await _on_seed_finish(tor_info)
                         await sleep(0.5)
-            except (ClientError, TimeoutError, Exception, AQError) as e:
-                LOGGER.error(str(e))
+            except RetryError as e:
+                LOGGER.warning(f"qBittorrent polling failed after multiple retries: {e}")
+            except Exception as e:
+                LOGGER.error(f"An unexpected error occurred in qb_listener: {e}", exc_info=True)
         await sleep(3)
 
 

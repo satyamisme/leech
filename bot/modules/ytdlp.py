@@ -75,6 +75,7 @@ class YtSelection:
         self.qual = None
 
     async def _event_handler(self):
+        self.event.clear()
         pfunc = partial(select_format, obj=self)
         handler = self.listener.client.add_handler(
             CallbackQueryHandler(
