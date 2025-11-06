@@ -265,16 +265,17 @@ async def join_files(opath):
 
 
 async def split_file(f_path, split_size, listener):
-    out_path = f"{f_path}."
+    out_path = f"{f_path}.part"
     if listener.is_cancelled:
         return False
     listener.subproc = await create_subprocess_exec(
         "split",
         "--numeric-suffixes=1",
-        "--suffix-length=3",
+        "--suffix-length=2",
         f"--bytes={split_size}",
         f_path,
         out_path,
+        ".split.mkv",
         stderr=PIPE,
     )
     _, stderr = await listener.subproc.communicate()
@@ -291,6 +292,25 @@ async def split_file(f_path, split_size, listener):
             stderr = "Unable to decode the error!"
         LOGGER.error(f"{stderr}. Split Document: {f_path}")
     return True
+
+
+async def is_video(path: str):
+    """Check if a file is a video."""
+    mime_type = await sync_to_async(get_mime_type, path)
+    if mime_type.startswith("video"):
+        return True
+    try:
+        result = await cmd_exec(["ffprobe", "-hide_banner", "-loglevel", "error", "-print_format", "json", "-show_streams", path])
+        if result[0] and result[2] == 0:
+            fields = eval(result[0]).get("streams")
+            if fields is None:
+                return False
+            for stream in fields:
+                if stream.get("codec_type") == "video":
+                    return True
+    except:
+        return False
+    return False
 
 
 class SevenZ:
